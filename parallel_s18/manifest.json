@@ -1,0 +1,1272 @@
+{
+  "n": 18,
+  "inherited": 1466358,
+  "expected_fpf": null,
+  "expected_total": null,
+  "fpf_partitions": 88,
+  "created": "2026-03-29T20:42:18.404735",
+  "partitions": {
+    "5_4_4_3_2": {
+      "partition": [
+        5,
+        4,
+        4,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.818966",
+      "completed_at": null
+    },
+    "6_6_4_2": {
+      "partition": [
+        6,
+        6,
+        4,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.744927",
+      "completed_at": null
+    },
+    "10_4_4": {
+      "partition": [
+        10,
+        4,
+        4
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.762931",
+      "completed_at": null
+    },
+    "8_8_2": {
+      "partition": [
+        8,
+        8,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.789965",
+      "completed_at": null
+    },
+    "6_6_6": {
+      "partition": [
+        6,
+        6,
+        6
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.807974",
+      "completed_at": null
+    },
+    "8_3_3_2_2": {
+      "partition": [
+        8,
+        3,
+        3,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.848992",
+      "completed_at": null
+    },
+    "9_5_4": {
+      "partition": [
+        9,
+        5,
+        4
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.868501",
+      "completed_at": null
+    },
+    "10_5_3": {
+      "partition": [
+        10,
+        5,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.892505",
+      "completed_at": null
+    },
+    "9_3_3_3": {
+      "partition": [
+        9,
+        3,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.911498",
+      "completed_at": null
+    },
+    "7_5_4_2": {
+      "partition": [
+        7,
+        5,
+        4,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.940504",
+      "completed_at": null
+    },
+    "4_4_3_3_2_2": {
+      "partition": [
+        4,
+        4,
+        3,
+        3,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.964041",
+      "completed_at": null
+    },
+    "14_2_2": {
+      "partition": [
+        14,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.000042",
+      "completed_at": null
+    },
+    "9_3_2_2_2": {
+      "partition": [
+        9,
+        3,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.024042",
+      "completed_at": null
+    },
+    "7_3_3_3_2": {
+      "partition": [
+        7,
+        3,
+        3,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.048053",
+      "completed_at": null
+    },
+    "5_4_3_2_2_2": {
+      "partition": [
+        5,
+        4,
+        3,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.070578",
+      "completed_at": null
+    },
+    "11_5_2": {
+      "partition": [
+        11,
+        5,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.094575",
+      "completed_at": null
+    },
+    "11_3_2_2": {
+      "partition": [
+        11,
+        3,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.119580",
+      "completed_at": null
+    },
+    "5_3_2_2_2_2_2": {
+      "partition": [
+        5,
+        3,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.130574",
+      "completed_at": null
+    },
+    "3_3_3_3_2_2_2": {
+      "partition": [
+        3,
+        3,
+        3,
+        3,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.155580",
+      "completed_at": null
+    },
+    "2_2_2_2_2_2_2_2_2": {
+      "partition": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.191090",
+      "completed_at": null
+    },
+    "18": {
+      "partition": [
+        18
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.202091",
+      "completed_at": null
+    },
+    "4_4_4_4_2": {
+      "partition": [
+        4,
+        4,
+        4,
+        4,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.705916",
+      "completed_at": null
+    },
+    "6_5_4_3": {
+      "partition": [
+        6,
+        5,
+        4,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.699916",
+      "completed_at": null
+    },
+    "9_4_3_2": {
+      "partition": [
+        9,
+        4,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.722918",
+      "completed_at": null
+    },
+    "6_4_3_3_2": {
+      "partition": [
+        6,
+        4,
+        3,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.727917",
+      "completed_at": null
+    },
+    "12_6": {
+      "partition": [
+        12,
+        6
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.768966",
+      "completed_at": null
+    },
+    "8_6_2_2": {
+      "partition": [
+        8,
+        6,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.795966",
+      "completed_at": null
+    },
+    "6_6_3_3": {
+      "partition": [
+        6,
+        6,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.812967",
+      "completed_at": null
+    },
+    "5_5_4_4": {
+      "partition": [
+        5,
+        5,
+        4,
+        4
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.843964",
+      "completed_at": null
+    },
+    "8_7_3": {
+      "partition": [
+        8,
+        7,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.874499",
+      "completed_at": null
+    },
+    "10_4_2_2": {
+      "partition": [
+        10,
+        4,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.898506",
+      "completed_at": null
+    },
+    "7_4_4_3": {
+      "partition": [
+        7,
+        4,
+        4,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.916509",
+      "completed_at": null
+    },
+    "7_4_3_2_2": {
+      "partition": [
+        7,
+        4,
+        3,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.946500",
+      "completed_at": null
+    },
+    "10_3_3_2": {
+      "partition": [
+        10,
+        3,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.970043",
+      "completed_at": null
+    },
+    "6_3_3_2_2_2": {
+      "partition": [
+        6,
+        3,
+        3,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.983041",
+      "completed_at": null
+    },
+    "9_7_2": {
+      "partition": [
+        9,
+        7,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.018050",
+      "completed_at": null
+    },
+    "7_5_3_3": {
+      "partition": [
+        7,
+        5,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.042051",
+      "completed_at": null
+    },
+    "5_3_3_3_2_2": {
+      "partition": [
+        5,
+        3,
+        3,
+        3,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.064581",
+      "completed_at": null
+    },
+    "11_7": {
+      "partition": [
+        11,
+        7
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.088575",
+      "completed_at": null
+    },
+    "7_3_2_2_2_2": {
+      "partition": [
+        7,
+        3,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.112576",
+      "completed_at": null
+    },
+    "4_3_3_2_2_2_2": {
+      "partition": [
+        4,
+        3,
+        3,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.138583",
+      "completed_at": null
+    },
+    "6_5_3_2_2": {
+      "partition": [
+        6,
+        5,
+        3,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.161580",
+      "completed_at": null
+    },
+    "3_3_2_2_2_2_2_2": {
+      "partition": [
+        3,
+        3,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.185097",
+      "completed_at": null
+    },
+    "8_4_4_2": {
+      "partition": [
+        8,
+        4,
+        4,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.682916",
+      "completed_at": null
+    },
+    "16_2": {
+      "partition": [
+        16,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.694917",
+      "completed_at": null
+    },
+    "4_4_4_3_3": {
+      "partition": [
+        4,
+        4,
+        4,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.711917",
+      "completed_at": null
+    },
+    "6_4_4_4": {
+      "partition": [
+        6,
+        4,
+        4,
+        4
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.750937",
+      "completed_at": null
+    },
+    "8_4_2_2_2": {
+      "partition": [
+        8,
+        4,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.775963",
+      "completed_at": null
+    },
+    "8_5_5": {
+      "partition": [
+        8,
+        5,
+        5
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.801971",
+      "completed_at": null
+    },
+    "9_6_3": {
+      "partition": [
+        9,
+        6,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.830978",
+      "completed_at": null
+    },
+    "6_5_5_2": {
+      "partition": [
+        6,
+        5,
+        5,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.856986",
+      "completed_at": null
+    },
+    "6_4_2_2_2_2": {
+      "partition": [
+        6,
+        4,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.880520",
+      "completed_at": null
+    },
+    "9_5_2_2": {
+      "partition": [
+        9,
+        5,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.904499",
+      "completed_at": null
+    },
+    "6_6_2_2_2": {
+      "partition": [
+        6,
+        6,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.922498",
+      "completed_at": null
+    },
+    "5_5_4_2_2": {
+      "partition": [
+        5,
+        5,
+        4,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.952526",
+      "completed_at": null
+    },
+    "8_2_2_2_2_2": {
+      "partition": [
+        8,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.976044",
+      "completed_at": null
+    },
+    "9_9": {
+      "partition": [
+        9,
+        9
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.988043",
+      "completed_at": null
+    },
+    "10_2_2_2_2": {
+      "partition": [
+        10,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.013050",
+      "completed_at": null
+    },
+    "7_7_2_2": {
+      "partition": [
+        7,
+        7,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.036052",
+      "completed_at": null
+    },
+    "6_3_3_3_3": {
+      "partition": [
+        6,
+        3,
+        3,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.053073",
+      "completed_at": null
+    },
+    "13_5": {
+      "partition": [
+        13,
+        5
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.077575",
+      "completed_at": null
+    },
+    "11_4_3": {
+      "partition": [
+        11,
+        4,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.100574",
+      "completed_at": null
+    },
+    "6_2_2_2_2_2_2": {
+      "partition": [
+        6,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.124583",
+      "completed_at": null
+    },
+    "4_3_3_3_3_2": {
+      "partition": [
+        4,
+        3,
+        3,
+        3,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.179094",
+      "completed_at": null
+    },
+    "8_6_4": {
+      "partition": [
+        8,
+        6,
+        4
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.689918",
+      "completed_at": null
+    },
+    "8_5_3_2": {
+      "partition": [
+        8,
+        5,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.733924",
+      "completed_at": null
+    },
+    "8_4_3_3": {
+      "partition": [
+        8,
+        4,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.716917",
+      "completed_at": null
+    },
+    "12_4_2": {
+      "partition": [
+        12,
+        4,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.738917",
+      "completed_at": null
+    },
+    "10_6_2": {
+      "partition": [
+        10,
+        6,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.756929",
+      "completed_at": null
+    },
+    "4_4_4_2_2_2": {
+      "partition": [
+        4,
+        4,
+        4,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.783969",
+      "completed_at": null
+    },
+    "10_8": {
+      "partition": [
+        10,
+        8
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.824964",
+      "completed_at": null
+    },
+    "6_4_4_2_2": {
+      "partition": [
+        6,
+        4,
+        4,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.837964",
+      "completed_at": null
+    },
+    "12_3_3": {
+      "partition": [
+        12,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.862986",
+      "completed_at": null
+    },
+    "5_4_3_3_3": {
+      "partition": [
+        5,
+        4,
+        3,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.886506",
+      "completed_at": null
+    },
+    "7_6_5": {
+      "partition": [
+        7,
+        6,
+        5
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.928498",
+      "completed_at": null
+    },
+    "7_6_3_2": {
+      "partition": [
+        7,
+        6,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.934515",
+      "completed_at": null
+    },
+    "5_5_3_3_2": {
+      "partition": [
+        5,
+        5,
+        3,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.957532",
+      "completed_at": null
+    },
+    "14_4": {
+      "partition": [
+        14,
+        4
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:38.994043",
+      "completed_at": null
+    },
+    "12_2_2_2": {
+      "partition": [
+        12,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.006047",
+      "completed_at": null
+    },
+    "7_7_4": {
+      "partition": [
+        7,
+        7,
+        4
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.030050",
+      "completed_at": null
+    },
+    "5_5_2_2_2_2": {
+      "partition": [
+        5,
+        5,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.059062",
+      "completed_at": null
+    },
+    "13_3_2": {
+      "partition": [
+        13,
+        3,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.083575",
+      "completed_at": null
+    },
+    "7_5_2_2_2": {
+      "partition": [
+        7,
+        5,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.106581",
+      "completed_at": null
+    },
+    "5_5_5_3": {
+      "partition": [
+        5,
+        5,
+        5,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.144576",
+      "completed_at": null
+    },
+    "3_3_3_3_3_3": {
+      "partition": [
+        3,
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.150585",
+      "completed_at": null
+    },
+    "15_3": {
+      "partition": [
+        15,
+        3
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.168089",
+      "completed_at": null
+    },
+    "4_2_2_2_2_2_2_2": {
+      "partition": [
+        4,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.173092",
+      "completed_at": null
+    },
+    "4_4_2_2_2_2_2": {
+      "partition": [
+        4,
+        4,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "status": "running",
+      "worker_id": 22,
+      "fpf_count": null,
+      "elapsed_s": null,
+      "started_at": "2026-04-04T19:08:39.197090",
+      "completed_at": null
+    }
+  }
+}

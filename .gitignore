@@ -1,0 +1,20 @@
+*.pyc
+__pycache__/
+temp_*.g
+nr_trans_*.log
+gap_output*.log
+# Large/temporary files
+parallel_s18/checkpoints/worker_*/
+parallel_s18/worker_*.log
+parallel_s18/worker_*.g
+parallel_s18/worker_*_heartbeat.txt
+parallel_s18/worker_*_results.txt
+parallel_s14/
+parallel_s15/
+parallel_s16/
+parallel_s16_fresh/
+parallel_s17/
+parallel_s17_v2/
+checkpoints/
+*.bak
+temp_commands.g
