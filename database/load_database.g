@@ -253,6 +253,15 @@ LoadDatabaseIfExists := function()
         anyLoaded := true;
     fi;
 
+    # Load D_4^3 cache for Goursat fast path
+    if IsReadableFile(Concatenation(DATABASE_PATH, "d4_cube_cache.g")) then
+        Read(Concatenation(DATABASE_PATH, "d4_cube_cache.g"));
+        if IsBound(D4_CUBE_CACHE) then
+            Print("  Loaded D_4^3 cache: ", Length(D4_CUBE_CACHE), " subdirects\n");
+            anyLoaded := true;
+        fi;
+    fi;
+
     DATABASE_LOAD_STATS.load_time := Runtime() - startTime;
 
     if anyLoaded then

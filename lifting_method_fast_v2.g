@@ -1482,12 +1482,25 @@ RICH_DEDUP_THRESHOLD := 1000;
 # Chunk size for dedup of large candidate sets. Candidates are processed in
 # chunks of this size, with GC and mid-combo checkpoint saves between chunks.
 # This prevents OOM on combos with millions of candidates (e.g. [8,4,4,2]).
-DEDUP_CHUNK_SIZE := 50000;
+DEDUP_CHUNK_SIZE := 25000;
 
 # Maximum number of results to store in FPF_SUBDIRECT_CACHE per combo.
 # Combos producing more than this are not cached (they consume too much
 # memory and won't be reused since caches are cleared per partition).
 MAX_CACHE_RESULTS := 100000;
+
+# Restart after this many seconds of computation to keep memory clean.
+# GAP accumulates internal caches, attribute storage, and fragmented
+# memory over time. A fresh process loading from checkpoint is much leaner.
+# Set to 0 to disable. Default 3600 = 1 hour.
+RESTART_AFTER_SECONDS := 3600;
+
+# Global flag: set to true to cleanly unwind IterateCombinations after
+# the current combo's checkpoint is saved. Do not set manually.
+_FORCE_RESTART := false;
+_restartClock := 0;
+_ckpt_partial_start := 0;
+_CURRENT_COMBO := "";
 
 # ComputeSubgroupInvariant(H)
 # Compute a rich invariant tuple for subgroup H to minimize false positives
@@ -1513,13 +1526,20 @@ CheapSubgroupInvariant := function(H)
     return inv;
 end;
 
+# Threshold for element-order-histogram computation in cheap invariant.
+# At ~3.3 us/element, |H|=100000 takes ~330ms per group.
+# This is cheaper than the previous |H|<=10000 threshold for ConjugacyClasses
+# (~650ms at 10K), and gives dramatically better bucket discrimination
+# (e.g., 73 buckets vs 8 for the [4,3]x[6,11]x[8,22] combo, a 9x improvement).
+ORDER_HIST_MAX_SIZE := 100000;
+
 # CheapSubgroupInvariantFull(H) - Level 1: fast invariants without ConjugacyClasses.
 # Computes structural properties that don't require element enumeration.
 # These are sufficient to get bucket sizes of 1-3 for most partitions.
 CheapSubgroupInvariantFull := function(H)
     local inv, center, derived, abelianInv, sizeH, moved,
           blockOrbits, blockTIs, k, blockRange, blockPts, orbs, orbLens,
-          derivedSizes, D, nc;
+          derivedSizes, D, nc, orderHist, g, o;
 
     sizeH := Size(H);
 
@@ -1539,6 +1559,25 @@ CheapSubgroupInvariantFull := function(H)
     Add(inv, abelianInv);
 
     Add(inv, Exponent(H));
+
+    # Element order histogram: iterate over all elements, bucket by order.
+    # This is a much stronger discriminator than Exponent alone since it
+    # captures the full distribution of element orders, not just their LCM.
+    # Gated on |H| <= 100000 (~330ms max per group).
+    if sizeH <= ORDER_HIST_MAX_SIZE then
+        orderHist := [];
+        for g in H do
+            o := Order(g);
+            if IsBound(orderHist[o]) then
+                orderHist[o] := orderHist[o] + 1;
+            else
+                orderHist[o] := 1;
+            fi;
+        od;
+        Add(inv, orderHist);
+    else
+        Add(inv, -1);  # placeholder for large groups
+    fi;
 
     moved := MovedPoints(H);
     if Length(moved) > 0 then
@@ -1654,6 +1693,11 @@ InvariantsMatch := function(inv1, inv2)
     return true;
 end;
 
+# Global counter for RepresentativeAction calls during incremental dedup.
+# Used to diagnose bucket size issues (if RA calls > groups checked by a lot,
+# it means we're running into large buckets).
+_DEDUP_RA_COUNT := 0;
+
 # IsConjugateToAnyInBucket(N, H, bucket, inv)
 # Check if H is conjugate to any group in bucket under N
 # Uses pre-computed invariant to skip incompatible groups
@@ -1661,6 +1705,7 @@ IsConjugateToAnyInBucket := function(N, H, bucket, inv)
     local rep;
 
     for rep in bucket do
+        _DEDUP_RA_COUNT := _DEDUP_RA_COUNT + 1;
         if RepresentativeAction(N, H, rep) <> fail then
             return true;
         fi;
@@ -2018,12 +2063,14 @@ _LoadCheckpointLog := function(ckptLogFile)
     _CKPT_ALL_INV_KEYS := [];  # Invariant keys (saved alongside gens)
     _CKPT_TOTAL_CANDIDATES := 0;
     _CKPT_ADDED_COUNT := 0;
+    _CKPT_PARTIAL_START := 0;  # Position where partial groups begin (0 = none)
     Read(ckptLogFile);
     result := rec(
         completedKeys := _CKPT_COMPLETED_KEYS,
         allFpfGens := _CKPT_ALL_FPF_GENS,
         totalCandidates := _CKPT_TOTAL_CANDIDATES,
-        addedCount := _CKPT_ADDED_COUNT
+        addedCount := _CKPT_ADDED_COUNT,
+        partialStart := _CKPT_PARTIAL_START
     );
     # Attach inv keys if present (backward compatible: old logs won't have them)
     if Length(_CKPT_ALL_INV_KEYS) = Length(_CKPT_ALL_FPF_GENS) then
@@ -2034,6 +2081,7 @@ _LoadCheckpointLog := function(ckptLogFile)
     Unbind(_CKPT_ALL_INV_KEYS);
     Unbind(_CKPT_TOTAL_CANDIDATES);
     Unbind(_CKPT_ADDED_COUNT);
+    Unbind(_CKPT_PARTIAL_START);
     return result;
 end;
 
@@ -2117,6 +2165,7 @@ FindFPFClassesForPartition := function(n, partition)
     od;
 
     all_fpf := [];
+    _baseGroupCount := 0;  # groups from checkpoint not loaded into all_fpf
     allInvKeys := [];
     byInvariant := rec();
     addedCount := 0;
@@ -2124,6 +2173,8 @@ FindFPFClassesForPartition := function(n, partition)
     completedKeySet := rec();
     completedKeyList := [];
     comboCount := 0;
+    _FORCE_RESTART := false;
+    _restartClock := Runtime();
     lastCkptTime := Runtime();
 
     # Choose invariant function based on partition structure.
@@ -2178,6 +2229,7 @@ FindFPFClassesForPartition := function(n, partition)
                 _CKPT_TOTAL_CANDIDATES := 0;
                 _CKPT_ADDED_COUNT := 0;
             fi;
+            _CKPT_PARTIAL_START := 0;
             Read(ckptLogFile);
             # Preserve invKeys from .g base if available.
             # They cover the first N groups (from .g); remaining groups (from .log)
@@ -2193,7 +2245,8 @@ FindFPFClassesForPartition := function(n, partition)
                 totalCandidates := _CKPT_TOTAL_CANDIDATES,
                 addedCount := _CKPT_ADDED_COUNT,
                 richInvActive := (ckptData <> fail and IsBound(ckptData.richInvActive)
-                                   and ckptData.richInvActive = true)
+                                   and ckptData.richInvActive = true),
+                partialStart := _CKPT_PARTIAL_START
             );
             if _CKPT_INV_KEYS <> fail then
                 ckptData.invKeys := _CKPT_INV_KEYS;
@@ -2203,6 +2256,7 @@ FindFPFClassesForPartition := function(n, partition)
             Unbind(_CKPT_TOTAL_CANDIDATES);
             Unbind(_CKPT_ADDED_COUNT);
             Unbind(_CKPT_INV_KEYS);
+            Unbind(_CKPT_PARTIAL_START);
             Print("  CHECKPOINT: Deltas applied: ", Length(ckptData.allFpfGens),
                   " groups total, ", Length(ckptData.completedKeys), " combos\n");
             # Deduplicate completed keys and generators.
@@ -2286,59 +2340,107 @@ FindFPFClassesForPartition := function(n, partition)
             fi;
         fi;
         if ckptData <> fail then
-            Print("  CHECKPOINT: Rebuilding groups from ", Length(ckptData.allFpfGens),
-                  " generator sets...\n");
-            # Rebuild all_fpf from saved generators
-            for i in [1..Length(ckptData.allFpfGens)] do
-                gens := ckptData.allFpfGens[i];
-                if Length(gens) > 0 then
-                    H := Group(gens);
-                else
-                    H := Group(());
-                fi;
-                Add(all_fpf, H);
-                if i mod 1000 = 0 then
-                    Print("    rebuilt ", i, "/", Length(ckptData.allFpfGens), " groups\n");
-                fi;
-            od;
+            _hasPartialResume := ForAny(ckptData.completedKeys,
+                k -> Length(k) >= 15 and k{[1..15]} = "_dedup_partial_");
+
+            if _hasPartialResume then
+                # Partial resume: must rebuild groups for byInvariant index
+                Print("  CHECKPOINT: Partial resume — rebuilding ",
+                      Length(ckptData.allFpfGens), " groups...\n");
+                for i in [1..Length(ckptData.allFpfGens)] do
+                    gens := ckptData.allFpfGens[i];
+                    if Length(gens) > 0 then
+                        H := Group(gens);
+                    else
+                        H := Group(());
+                    fi;
+                    Add(all_fpf, H);
+                    if i mod 1000 = 0 then
+                        Print("    rebuilt ", i, "/",
+                              Length(ckptData.allFpfGens), " groups\n");
+                    fi;
+                od;
+                _baseGroupCount := 0;  # all groups are in all_fpf
+            else
+                # Fast resume: skip group rebuilding. Cross-combo duplicates
+                # are impossible, so old groups are never needed again.
+                # Just track the count for checkpoint bookkeeping.
+                _baseGroupCount := Length(ckptData.allFpfGens);
+                Print("  CHECKPOINT: Fast resume — skipping rebuild of ",
+                      _baseGroupCount, " groups\n");
+            fi;
+
             # Check if checkpoint was saved with rich invariants
             if IsBound(ckptData.richInvActive) and ckptData.richInvActive = true then
                 _richInvActive := true;
                 invFunc := ComputeSubgroupInvariant;
                 Print("  CHECKPOINT: Rich invariants active (restored from checkpoint)\n");
             fi;
-            # Per-combo dedup: no need to rebuild byInvariant on restore.
-            # The multiset of (degree, TI) is a conjugacy invariant, so
-            # cross-combo duplicates are impossible. Each combo resets its own index.
-            # Just load allInvKeys for checkpoint saving.
-            if IsBound(ckptData.invKeys) then
-                allInvKeys := ckptData.invKeys;
-                Print("  CHECKPOINT: Loaded ", Length(allInvKeys), " invariant keys\n");
-            fi;
             totalCandidates := ckptData.totalCandidates;
             addedCount := ckptData.addedCount;
+            # Save partial start position for byInvariant rebuild
+            if IsBound(ckptData.partialStart) and ckptData.partialStart > 0 then
+                _ckpt_partial_start := ckptData.partialStart;
+            else
+                _ckpt_partial_start := 0;
+            fi;
             # Build completed key set for O(1) lookup
             for i in [1..Length(ckptData.completedKeys)] do
                 completedKeySet.(ckptData.completedKeys[i]) := true;
                 Add(completedKeyList, ckptData.completedKeys[i]);
             od;
-            Print("  CHECKPOINT: Restored ", Length(all_fpf), " groups, ",
+            Print("  CHECKPOINT: Restored ",
+                  _baseGroupCount + Length(all_fpf), " groups (",
+                  _baseGroupCount, " skipped + ",
+                  Length(all_fpf), " loaded), ",
                   Length(completedKeyList), " combos. Ready.\n");
-            # Save monolithic checkpoint with inv keys for faster future restarts
-            if ckptFile <> "" and Length(allInvKeys) = Length(all_fpf) then
-                Print("  CHECKPOINT: Saving with invariant keys for fast reload...\n");
-                _SaveCheckpoint(ckptFile, completedKeyList, all_fpf,
-                                totalCandidates, addedCount, allInvKeys);
-                AppendTo(ckptFile, "\n_CKPT_RICH_INV := ", _richInvActive, ";\n");
-                # Truncate the .log file since all its content is now in the .g file.
-                # This prevents the .log overlay from accumulating stale deltas and
-                # ensures inv keys are preserved on future restarts.
-                if ckptLogFile <> "" and IsExistingFile(ckptLogFile) then
-                    _BackupFile(ckptLogFile);
-                    PrintTo(ckptLogFile, "# Merged into .g checkpoint\n");
+        fi;
+    fi;
+
+    # Pre-build byInvariant index if resuming from a mid-combo checkpoint.
+    # Do this BEFORE any combo computation so we catch issues early
+    # (not after hours of lifting).
+    _hasPartialResume := ForAny(completedKeyList,
+        k -> Length(k) >= 15 and k{[1..15]} = "_dedup_partial_");
+    if _hasPartialResume and Length(all_fpf) > 0 then
+        if _ckpt_partial_start > 0 and _ckpt_partial_start <= Length(all_fpf) then
+            _idxFrom := _ckpt_partial_start;
+        else
+            _idxFrom := 1;
+        fi;
+        _nToIndex := Length(all_fpf) - _idxFrom + 1;
+        Print("  PRE-INDEX: mid-combo resume, indexing ", _nToIndex,
+              " groups (", _idxFrom, "..", Length(all_fpf),
+              ", skipping ", _idxFrom - 1, " completed)\n");
+        if Length(allInvKeys) >= Length(all_fpf) then
+            for _pi in [_idxFrom..Length(all_fpf)] do
+                _pk := allInvKeys[_pi];
+                if not IsBound(byInvariant.(_pk)) then
+                    byInvariant.(_pk) := [];
                 fi;
-                Print("  CHECKPOINT: Saved (log truncated).\n");
-            fi;
+                Add(byInvariant.(_pk), all_fpf[_pi]);
+                if (_pi - _idxFrom + 1) mod 1000 = 0 then
+                    Print("    indexed ", _pi - _idxFrom + 1, "/",
+                          _nToIndex, " (saved keys)\n");
+                fi;
+            od;
+            Print("  PRE-INDEX: done (from saved keys)\n");
+        else
+            Print("  PRE-INDEX: recomputing invariants...\n");
+            for _pi in [_idxFrom..Length(all_fpf)] do
+                _pinv := invFunc(all_fpf[_pi]);
+                _pk := InvariantKey(_pinv);
+                if not IsBound(byInvariant.(_pk)) then
+                    byInvariant.(_pk) := [];
+                fi;
+                Add(byInvariant.(_pk), all_fpf[_pi]);
+                if (_pi - _idxFrom + 1) mod 1000 = 0 then
+                    Print("    recomputed ", _pi - _idxFrom + 1, "/",
+                          _nToIndex, "\n");
+                fi;
+            od;
+            Print("  PRE-INDEX: done (", _nToIndex, " recomputed, ",
+                  Length(RecNames(byInvariant)), " buckets)\n");
         fi;
     fi;
 
@@ -2353,44 +2455,15 @@ FindFPFClassesForPartition := function(n, partition)
     # after each chunk so dedup progress survives crashes.
     incrementalDedup := function(newResults)
         local H, before, _dedupIdx, _dedupTotal, _lastDedupProgress, _beforeAdd,
-              _chunkStart, _chunkEnd, _i, _lastCkptPos, _inv, _key, _preIdx;
-        # Rebuild byInvariant index. Normally cross-combo duplicates are
-        # impossible (different factor types → different invariants), so a
-        # fresh rec() suffices. But after a mid-combo checkpoint resume,
-        # partial groups from the interrupted combo are in all_fpf and MUST
-        # be indexed to prevent re-addition. We detect this by checking for
-        # _dedup_partial_ keys in completedKeySet.
-        byInvariant := rec();
-        if Length(all_fpf) > 0 and ForAny(completedKeyList,
-                k -> Length(k) >= 15 and k{[1..15]} = "_dedup_partial_") then
-            Print("    [dedup] mid-combo resume detected, rebuilding index from ",
-                  Length(all_fpf), " existing groups...\n");
-            if Length(allInvKeys) = Length(all_fpf) then
-                # Fast path: use saved invariant keys (no recomputation needed)
-                for _preIdx in [1..Length(all_fpf)] do
-                    _key := allInvKeys[_preIdx];
-                    if not IsBound(byInvariant.(_key)) then
-                        byInvariant.(_key) := [];
-                    fi;
-                    Add(byInvariant.(_key), all_fpf[_preIdx]);
-                od;
-                Print("    [dedup] indexed ", Length(all_fpf),
-                      " groups from saved keys (0 recomputed)\n");
-            else
-                # Slow path: recompute invariants (old checkpoint without keys)
-                Print("    [dedup] no saved inv keys, recomputing...\n");
-                for _preIdx in [1..Length(all_fpf)] do
-                    _inv := invFunc(all_fpf[_preIdx]);
-                    _key := InvariantKey(_inv);
-                    if not IsBound(byInvariant.(_key)) then
-                        byInvariant.(_key) := [];
-                    fi;
-                    Add(byInvariant.(_key), all_fpf[_preIdx]);
-                od;
-                Print("    [dedup] indexed ", Length(all_fpf),
-                      " groups (recomputed), ", Length(RecNames(byInvariant)),
-                      " buckets\n");
-            fi;
+              _chunkStart, _chunkEnd, _i, _lastCkptPos, _inv, _key, _preIdx,
+              _lastRACount;
+        # Reset byInvariant for this combo. If we pre-built the index
+        # at startup (_hasPartialResume), keep it for the FIRST combo
+        # (the interrupted one), then reset normally for subsequent combos.
+        if _hasPartialResume then
+            _hasPartialResume := false;
+        else
+            byInvariant := rec();
         fi;
         before := Length(all_fpf);
         totalCandidates := totalCandidates + Length(newResults);
@@ -2403,6 +2476,7 @@ FindFPFClassesForPartition := function(n, partition)
         _dedupIdx := 0;
         _dedupTotal := Length(newResults);
         _lastDedupProgress := Runtime();
+        _lastRACount := _DEDUP_RA_COUNT;
         _lastCkptPos := before;  # tracks last checkpoint position in all_fpf
         _chunkStart := 1;
         while _chunkStart <= _dedupTotal do
@@ -2414,12 +2488,15 @@ FindFPFClassesForPartition := function(n, partition)
                 if _dedupTotal > 50 and Runtime() - _lastDedupProgress > 60000 then
                     Print("      [dedup] ", _dedupIdx, "/", _dedupTotal,
                           " checked, ", Length(all_fpf) - before, " new so far (",
-                          Length(all_fpf), " total, ",
+                          _baseGroupCount + Length(all_fpf), " total, ",
+                          _DEDUP_RA_COUNT - _lastRACount, " RA, ",
                           Int((Runtime() - _lastDedupProgress)/1000 + 60), "s)\n");
                     _lastDedupProgress := Runtime();
+                    _lastRACount := _DEDUP_RA_COUNT;
                     if IsBound(_HEARTBEAT_FILE) and _HEARTBEAT_FILE <> "" then
                         PrintTo(_HEARTBEAT_FILE, "alive ",
-                                Int(Runtime() / 1000), "s dedup ",
+                                Int(Runtime() / 1000), "s ",
+                                _CURRENT_COMBO, " dedup ",
                                 _dedupIdx, "/", _dedupTotal, "\n");
                     fi;
                 fi;
@@ -2436,13 +2513,20 @@ FindFPFClassesForPartition := function(n, partition)
             if _dedupTotal > DEDUP_CHUNK_SIZE and _chunkEnd < _dedupTotal then
                 GASMAN("collect");
                 Print("      [dedup chunk] ", _chunkEnd, "/", _dedupTotal,
-                      " processed, ", Length(all_fpf) - before, " new, GC done\n");
+                      " processed, ", Length(all_fpf) - before, " new, GC done (",
+                      _baseGroupCount + Length(all_fpf), " total)\n");
                 # Mid-combo checkpoint: save only NEW groups since last chunk save
                 if ckptLogFile <> "" and Length(all_fpf) > _lastCkptPos then
+                    # On first partial save, record where partial groups start
+                    if _lastCkptPos = before then
+                        AppendTo(ckptLogFile, "_CKPT_PARTIAL_START := ",
+                                 before + 1, ";\n");
+                    fi;
                     _AppendCheckpointDelta(ckptLogFile,
                         Concatenation("_dedup_partial_", String(_chunkEnd)),
                         all_fpf{[_lastCkptPos+1..Length(all_fpf)]},
-                        totalCandidates, addedCount, Length(all_fpf),
+                        totalCandidates, addedCount,
+                        _baseGroupCount + Length(all_fpf),
                         allInvKeys{[_lastCkptPos+1..Length(allInvKeys)]});
                     _lastCkptPos := Length(all_fpf);
                     Print("      [dedup chunk] mid-combo checkpoint saved\n");
@@ -2451,7 +2535,8 @@ FindFPFClassesForPartition := function(n, partition)
             _chunkStart := _chunkEnd + 1;
         od;
         Print("    combo: ", Length(newResults), " candidates -> ",
-              Length(all_fpf) - before, " new (", Length(all_fpf), " total)\n");
+              Length(all_fpf) - before, " new (",
+              _baseGroupCount + Length(all_fpf), " total)\n");
     end;
 
     # Enumerate all combinations
@@ -2461,6 +2546,12 @@ FindFPFClassesForPartition := function(n, partition)
               _normKey, _combo_succeeded, _preComboCandidates, _comboStartTime;
 
         if depth > Length(transitiveLists) then
+            # Clean restart: if flag is set, unwind recursion immediately.
+            # The last combo's checkpoint is already saved.
+            if _FORCE_RESTART then
+                return;
+            fi;
+
             # Check cache first
             cacheKey := ComputeCacheKey(currentFactors);
             comboCount := comboCount + 1;
@@ -2470,6 +2561,45 @@ FindFPFClassesForPartition := function(n, partition)
                 Print("    >> combo [", cacheKey, "] CHECKPOINT SKIP\n");
                 return;
             fi;
+
+            # Per-combo output file skip: if the result file already exists
+            # in COMBO_OUTPUT_DIR AND is complete, this combo was completed by
+            # a previous worker even if the checkpoint didn't record it.
+            # Completeness check: header line "# deduped: N" must match the
+            # actual number of generator lines (lines starting with "[").
+            if COMBO_OUTPUT_DIR <> "" then
+                _comboFilePath := Concatenation(COMBO_OUTPUT_DIR, "/",
+                    _CacheKeyToFileName(cacheKey));
+                if IsExistingFile(_comboFilePath) then
+                    _comboFileOK := false;
+                    _comboFileLines := StringFile(_comboFilePath);
+                    if _comboFileLines <> fail then
+                        _cfExpected := -1;
+                        _cfActual := 0;
+                        for _cfLine in SplitString(_comboFileLines, "\n") do
+                            if Length(_cfLine) >= 12 and
+                               _cfLine{[1..11]} = "# deduped: " then
+                                _cfExpected := Int(_cfLine{[12..Length(_cfLine)]});
+                            elif Length(_cfLine) > 0 and _cfLine[1] = '[' then
+                                _cfActual := _cfActual + 1;
+                            fi;
+                        od;
+                        if _cfExpected >= 0 and _cfExpected = _cfActual then
+                            _comboFileOK := true;
+                        fi;
+                    fi;
+                    if _comboFileOK then
+                        Print("    >> combo [", cacheKey, "] COMBO FILE EXISTS (",
+                              _cfActual, " groups), SKIP\n");
+                        return;
+                    else
+                        Print("    >> combo [", cacheKey, "] COMBO FILE INCOMPLETE, REDO\n");
+                    fi;
+                fi;
+            fi;
+
+            # Set global combo identifier for heartbeat tracking
+            _CURRENT_COMBO := cacheKey;
 
             Print("    >> combo [", cacheKey, "] factors=",
                   List(currentFactors, f -> [NrMovedPoints(f), TransitiveIdentification(f)]),
@@ -2628,7 +2758,7 @@ FindFPFClassesForPartition := function(n, partition)
             # Per-combo timing log
             Print("    combo #", comboCount, " done (",
                   (Runtime() - startTime) / 1000.0, "s elapsed, ",
-                  Length(all_fpf), " fpf total)\n");
+                  _baseGroupCount + Length(all_fpf), " fpf total)\n");
 
             # Per-combo output: write combo results to separate file
             if COMBO_OUTPUT_DIR <> "" then
@@ -2651,12 +2781,13 @@ FindFPFClassesForPartition := function(n, partition)
                 if ckptLogFile <> "" then
                     _AppendCheckpointDelta(ckptLogFile, cacheKey,
                         all_fpf{[fpfBeforeCombo+1..Length(all_fpf)]},
-                        totalCandidates, addedCount, Length(all_fpf),
+                        totalCandidates, addedCount,
+                        _baseGroupCount + Length(all_fpf),
                         allInvKeys{[fpfBeforeCombo+1..Length(allInvKeys)]});
                     lastCkptTime := Runtime();
                     Print("    CHECKPOINT SAVED (",
                           Length(completedKeyList), " combos, ",
-                          Length(all_fpf), " groups)\n");
+                          _baseGroupCount + Length(all_fpf), " groups)\n");
                 fi;
             else
                 Print("    SKIPPING checkpoint for failed combo (will retry on resume)\n");
@@ -2665,14 +2796,29 @@ FindFPFClassesForPartition := function(n, partition)
             # Heartbeat update (written every combo; overhead negligible)
             if IsBound(_HEARTBEAT_FILE) and _HEARTBEAT_FILE <> "" then
                 PrintTo(_HEARTBEAT_FILE, "alive ",
-                        Int(Runtime() / 1000), "s combo #",
-                        comboCount, " fpf=", Length(all_fpf), "\n");
+                        Int(Runtime() / 1000), "s ",
+                        _CURRENT_COMBO, " done, combo #",
+                        comboCount, " fpf=",
+                        _baseGroupCount + Length(all_fpf), "\n");
+            fi;
+
+            # Periodic restart: after N seconds of computation, set flag to
+            # unwind recursion. The checkpoint is already saved above.
+            # Only triggers between combos, never mid-computation.
+            if RESTART_AFTER_SECONDS > 0 and _combo_succeeded then
+                if (Runtime() - _restartClock) / 1000 >= RESTART_AFTER_SECONDS then
+                    Print("  RESTART: ", Int((Runtime() - _restartClock) / 1000),
+                          "s elapsed (limit ", RESTART_AFTER_SECONDS,
+                          "s), requesting clean restart\n");
+                    _FORCE_RESTART := true;
+                fi;
             fi;
 
             return;
         fi;
 
         for T in transitiveLists[depth] do
+            if _FORCE_RESTART then return; fi;
             # Skip redundant orderings for equal-degree parts.
             # ComputeCacheKey sorts factor IDs, so (A4,D4) and (D4,A4)
             # map to the same key. Only visit non-decreasing order.
@@ -2691,7 +2837,8 @@ FindFPFClassesForPartition := function(n, partition)
     IterateCombinations(1, []);
 
     # Final checkpoint: write monolithic .g file for archival
-    if ckptFile <> "" then
+    # Skip monolithic save in fast-resume mode (we don't have old groups)
+    if ckptFile <> "" and _baseGroupCount = 0 then
         _SaveCheckpoint(ckptFile, completedKeyList, all_fpf,
                         totalCandidates, addedCount, allInvKeys);
         AppendTo(ckptFile, "\n_CKPT_RICH_INV := ", _richInvActive, ";\n");
@@ -2702,11 +2849,15 @@ FindFPFClassesForPartition := function(n, partition)
         Print("  FINAL CHECKPOINT SAVED (",
               Length(completedKeyList), " combos, ",
               Length(all_fpf), " groups)\n");
+    elif ckptFile <> "" then
+        Print("  FINAL: skipping monolithic checkpoint (fast-resume mode, ",
+              Length(all_fpf), " new groups in .log deltas)\n");
     fi;
 
     Print("  |N| = ", Size(N), " (vs |S_", n, "| = ", Factorial(n), ")\n");
     Print("  Speedup factor: ", Int(Factorial(n) / Size(N)), "x\n");
-    Print("  Final count: ", Length(all_fpf), " (from ", totalCandidates, " candidates)\n");
+    Print("  Final count: ", _baseGroupCount + Length(all_fpf),
+          " (from ", totalCandidates, " candidates)\n");
     Print("  Time: ", (Runtime() - startTime) / 1000.0, "s\n");
 
     return all_fpf;

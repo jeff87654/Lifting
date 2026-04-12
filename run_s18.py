@@ -501,10 +501,39 @@ for part in myPartitions do
     Print("  => ", Length(fpf_classes), " classes (", partTime, "s)\\n");
     totalCount := totalCount + Length(fpf_classes);
 
-    # Write summary.txt to partition combo output directory
+    # Check for clean restart request (memory management).
+    if _FORCE_RESTART then
+        Print("\\n*** CLEAN RESTART requested after ", partTime, "s ***\\n");
+        Print("*** Checkpoint saved. Exiting for fresh process. ***\\n");
+        PrintTo("{heartbeat_file}",
+            "RESTART after partition ", part, " (partial)\\n");
+        LogTo();
+        # QuitGap works from anywhere (unlike QUIT which can't be in blocks)
+        QuitGap(0);
+    fi;
+
+    # Write summary.txt to partition combo output directory.
+    # Count classes by reading all per-combo .g files in the partition dir
+    # (fpf_classes only contains the CURRENT session's groups, not the total
+    # accumulated across all worker restarts via combo files).
+    _totalClasses := 0;
+    _comboFiles := DirectoryContents(COMBO_OUTPUT_DIR);
+    for _cfName in _comboFiles do
+        if Length(_cfName) > 2 and _cfName{{[Length(_cfName)-1..Length(_cfName)]}} = ".g" then
+            _cfContent := StringFile(Concatenation(COMBO_OUTPUT_DIR, "/", _cfName));
+            if _cfContent <> fail then
+                for _cfLine in SplitString(_cfContent, "\\n") do
+                    if Length(_cfLine) > 0 and _cfLine[1] = '[' then
+                        _totalClasses := _totalClasses + 1;
+                    fi;
+                od;
+            fi;
+        fi;
+    od;
     PrintTo(Concatenation(COMBO_OUTPUT_DIR, "/summary.txt"),
             "partition: [", _partStr, "]\\n",
-            "total_classes: ", Length(fpf_classes), "\\n",
+            "total_classes: ", _totalClasses, "\\n",
+            "session_added: ", Length(fpf_classes), "\\n",
             "elapsed_seconds: ", partTime, "\\n");
 
     # Save generators to per-partition gens file
@@ -570,7 +599,7 @@ def launch_gap_worker(script_file, worker_id):
     cmd = [
         BASH_EXE, "--login", "-c",
         f'cd "/cygdrive/c/Program Files/GAP-4.15.1/runtime/opt/gap-4.15.1" && '
-        f'./gap.exe -q -o 0 "{script_cygwin}"'
+        f'exec ./gap.exe -q -o 0 "{script_cygwin}"'
     ]
 
     process = subprocess.Popen(
@@ -690,8 +719,34 @@ def log_msg(msg, also_print=True):
 # ===========================================================================
 # Main runner with poll loop
 # ===========================================================================
+def _next_worker_id(output_dir):
+    """Find the next available worker ID from checkpoint directories."""
+    ckpt_base = os.path.join(output_dir, "checkpoints")
+    existing = set()
+    if os.path.isdir(ckpt_base):
+        for entry in os.listdir(ckpt_base):
+            if entry.startswith("worker_"):
+                try:
+                    existing.add(int(entry.replace("worker_", "")))
+                except ValueError:
+                    pass
+    return max(existing) + 1 if existing else 0
+
+
+def _get_incomplete_for_worker(assignment_dict, worker_id, output_dir):
+    """Return list of partitions assigned to worker_id that lack summary.txt."""
+    incomplete = []
+    for p in assignment_dict[worker_id]:
+        part_dir = os.path.join(output_dir, partition_dir_name(p))
+        if not os.path.exists(os.path.join(part_dir, "summary.txt")):
+            incomplete.append(p)
+    return incomplete
+
+
 def run_workers(manifest, active_assignments, timeout):
-    """Launch workers and monitor with poll loop."""
+    """Launch workers and monitor with poll loop.
+    Respawns individual workers immediately when they exit with
+    incomplete partitions (crash, clean restart, etc.)."""
     processes = {}
     start_times = {}
     assignment_dict = {}
@@ -725,10 +780,11 @@ def run_workers(manifest, active_assignments, timeout):
         time.sleep(30)
         now = time.time()
 
-        for worker_id, proc in processes.items():
+        for worker_id in list(processes.keys()):
             if worker_id in completed_workers:
                 continue
 
+            proc = processes[worker_id]
             rc = proc.poll()
             elapsed = now - start_times[worker_id]
 
@@ -769,6 +825,48 @@ def run_workers(manifest, active_assignments, timeout):
                         if rc != 0:
                             update_manifest_partition(
                                 manifest, key, status="failed")
+
+                # Immediate respawn: if this worker has incomplete
+                # partitions, spawn a fresh worker for them right away.
+                # Guard: skip respawn if worker ran < 120s (crash loop).
+                still_todo = _get_incomplete_for_worker(
+                    assignment_dict, worker_id, OUTPUT_DIR)
+                if still_todo and elapsed < 120:
+                    log_msg(f"  Worker {worker_id} exited too quickly "
+                            f"({elapsed:.0f}s), NOT respawning "
+                            f"{len(still_todo)} partitions (crash loop?)")
+                    still_todo = []
+                if still_todo:
+                    new_wid = _next_worker_id(OUTPUT_DIR)
+                    log_msg(f"  Respawning {len(still_todo)} incomplete "
+                            f"partitions as Worker {new_wid}")
+                    ckpt_dir = os.path.join(
+                        OUTPUT_DIR, "checkpoints", f"worker_{new_wid}")
+                    os.makedirs(ckpt_dir, exist_ok=True)
+                    # Copy checkpoint files from old worker to new
+                    old_ckpt = os.path.join(
+                        OUTPUT_DIR, "checkpoints", f"worker_{worker_id}")
+                    if os.path.isdir(old_ckpt):
+                        for fname in os.listdir(old_ckpt):
+                            src = os.path.join(old_ckpt, fname)
+                            dst = os.path.join(ckpt_dir, fname)
+                            if not os.path.exists(dst):
+                                shutil.copy2(src, dst)
+                    script = create_worker_gap_script(
+                        still_todo, new_wid, OUTPUT_DIR)
+                    new_proc = launch_gap_worker(script, new_wid)
+                    processes[new_wid] = new_proc
+                    start_times[new_wid] = time.time()
+                    assignment_dict[new_wid] = still_todo
+                    for p in still_todo:
+                        key = partition_key(p)
+                        update_manifest_partition(
+                            manifest, key,
+                            status="running",
+                            worker_id=new_wid,
+                            started_at=datetime.datetime.now().isoformat()
+                        )
+                    log_msg(f"Worker {new_wid} launched (PID {new_proc.pid})")
 
             elif elapsed > timeout:
                 log_msg(f"Worker {worker_id} TIMEOUT after "
@@ -1444,6 +1542,75 @@ def resume_computation(args):
 
     run_workers(manifest, active_assignments, args.timeout)
     print_final_results(next_worker_id + args.workers)
+
+    # Auto-resume loop: if workers exited cleanly (RESTART_AFTER_SECONDS)
+    # but partitions are still incomplete, restart automatically.
+    # Guard: wait 30s before restarting to avoid rapid-fire respawning
+    # when workers fail immediately (e.g., syntax errors).
+    while True:
+        time.sleep(30)  # cooldown to prevent rapid respawn
+        # Reload manifest and check completion
+        manifest = load_manifest()
+        completed = get_completed_partitions_from_results(OUTPUT_DIR, 200)
+        for key, count in completed.items():
+            if key in manifest["partitions"]:
+                manifest["partitions"][key]["status"] = "completed"
+                manifest["partitions"][key]["fpf_count"] = count
+        save_manifest(manifest)
+
+        still_incomplete = get_incomplete_partitions(manifest)
+        if args.resume_partitions:
+            requested = set()
+            for p_str in args.resume_partitions:
+                try:
+                    requested.add(tuple(ast.literal_eval(p_str)))
+                except (ValueError, SyntaxError):
+                    pass
+            still_incomplete = [p for p in still_incomplete
+                                if p in requested]
+
+
+        if not still_incomplete:
+            log_msg("All requested partitions completed!")
+            break
+
+        log_msg(f"AUTO-RESUME: {len(still_incomplete)} partitions still "
+                f"incomplete, restarting with fresh process...")
+
+        # Find next worker ID
+        existing_workers = set()
+        ckpt_base = os.path.join(OUTPUT_DIR, "checkpoints")
+        if os.path.isdir(ckpt_base):
+            for entry in os.listdir(ckpt_base):
+                if entry.startswith("worker_"):
+                    try:
+                        existing_workers.add(
+                            int(entry.replace("worker_", "")))
+                    except ValueError:
+                        pass
+        next_wid = max(existing_workers) + 1 if existing_workers else 0
+
+        ckpt_progress = _scan_checkpoint_progress(still_incomplete)
+        assignments, loads = assign_partitions_to_workers(
+            still_incomplete, args.workers, ckpt_progress=ckpt_progress)
+
+        active_assignments = []
+        for i, parts in enumerate(assignments):
+            if parts:
+                wid = next_wid + i
+                active_assignments.append((wid, parts))
+                os.makedirs(os.path.join(OUTPUT_DIR, "checkpoints",
+                                         f"worker_{wid}"), exist_ok=True)
+
+        _recover_checkpoint_logs(still_incomplete, active_assignments,
+                                  next_wid)
+
+        for p in still_incomplete:
+            part_dir = os.path.join(OUTPUT_DIR, partition_dir_name(p))
+            os.makedirs(part_dir, exist_ok=True)
+
+        run_workers(manifest, active_assignments, args.timeout)
+        print_final_results(next_wid + args.workers)
 
 
 # ===========================================================================

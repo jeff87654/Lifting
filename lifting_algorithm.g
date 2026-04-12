@@ -816,7 +816,8 @@ LiftThroughLayer := function(P, M, N, subgroups_containing_M, shifted_factors, o
                 _lastProgressTime := Runtime();
                 if IsBound(_HEARTBEAT_FILE) and _HEARTBEAT_FILE <> "" then
                     PrintTo(_HEARTBEAT_FILE, "alive ",
-                            Int(Runtime() / 1000), "s layer [", layerType,
+                            Int(Runtime() / 1000), "s ",
+                            _CURRENT_COMBO, " layer [", layerType,
                             "] parent ", _parentIdx, "/", _numParents, "\n");
                 fi;
             fi;
@@ -829,7 +830,8 @@ LiftThroughLayer := function(P, M, N, subgroups_containing_M, shifted_factors, o
             # Update heartbeat if available
             if IsBound(_HEARTBEAT_FILE) and _HEARTBEAT_FILE <> "" then
                 PrintTo(_HEARTBEAT_FILE, "alive ",
-                        Int(Runtime() / 1000), "s layer [", layerType,
+                        Int(Runtime() / 1000), "s ",
+                        _CURRENT_COMBO, " layer [", layerType,
                         "] parent ", _parentIdx, "/", _numParents, "\n");
             fi;
         fi;
@@ -1390,9 +1392,13 @@ RefineChiefSeriesLayer := function(G, M, N)
         fi;
 
         # METHOD 2: Try derived/lower central series (original approach)
+        # NOTE: All methods must check IsSubgroup(L, N), not just Size(L) > Size(N).
+        # For direct products on disjoint point sets, a subgroup can have the right
+        # size range but not contain N (e.g., H81 on {7-18} vs V_4 on {3-6}).
         if not found then
             for L in DerivedSeriesOfGroup(currentM) do
-                if Size(L) > Size(N) and Size(L) < Size(currentM) then
+                if Size(L) > Size(N) and Size(L) < Size(currentM)
+                   and IsSubgroup(L, N) then
                     if IsNormal(G, L) then
                         Add(refinement, L);
                         currentM := L;
@@ -1405,7 +1411,8 @@ RefineChiefSeriesLayer := function(G, M, N)
 
         if not found then
             for L in LowerCentralSeriesOfGroup(currentM) do
-                if Size(L) > Size(N) and Size(L) < Size(currentM) then
+                if Size(L) > Size(N) and Size(L) < Size(currentM)
+                   and IsSubgroup(L, N) then
                     if IsNormal(G, L) then
                         Add(refinement, L);
                         currentM := L;
@@ -1419,7 +1426,8 @@ RefineChiefSeriesLayer := function(G, M, N)
         # METHOD 3: Try Frattini subgroup
         if not found then
             L := FrattiniSubgroup(currentM);
-            if Size(L) > Size(N) and Size(L) < Size(currentM) then
+            if Size(L) > Size(N) and Size(L) < Size(currentM)
+               and IsSubgroup(L, N) then
                 if IsNormal(G, L) then
                     Add(refinement, L);
                     currentM := L;
@@ -1433,7 +1441,8 @@ RefineChiefSeriesLayer := function(G, M, N)
             # Try taking intersection with stabilizers
             for i in MovedPoints(G) do
                 L := Intersection(currentM, Stabilizer(G, i));
-                if Size(L) > Size(N) and Size(L) < Size(currentM) then
+                if Size(L) > Size(N) and Size(L) < Size(currentM)
+                   and IsSubgroup(L, N) then
                     if IsNormal(G, L) then
                         Add(refinement, L);
                         currentM := L;
@@ -2365,21 +2374,46 @@ end;
 # by n. So keeping one representative per n-orbit at layer i yields exactly
 # the right set of representatives at the final layer.
 ###############################################################################
+
+# OPTION B: richer inter-layer invariant.
+# Use Center size, DerivedSubgroup size, and Exponent as extra discriminators.
+# These are O(1) amortized (GAP caches them) and cheap to compute.
+# Element order histogram is skipped here — it requires element iteration
+# which is O(|H|) and can be slow at intermediate layers with many groups.
+USE_RICH_INTERLAYER_INV := true;
+
+_InterLayerInvariantKey := function(H, degree)
+    local orbSizes;
+    orbSizes := SortedList(List(Orbits(H, [1..degree]), Length));
+    if USE_RICH_INTERLAYER_INV then
+        return String([Size(H), orbSizes, AbelianInvariants(H),
+                       DerivedLength(H), Size(Center(H)),
+                       Size(DerivedSubgroup(H)), Exponent(H)]);
+    else
+        return String([Size(H), orbSizes, AbelianInvariants(H),
+                       DerivedLength(H)]);
+    fi;
+end;
+
 _InterLayerDedup := function(groups, norm, degree)
-    local byInv, unique, H, key, isDupe, K, t0, orbSizes, before,
+    local byInv, unique, H, key, isDupe, K, t0, before,
           maxBucket, totalChecked, totalFound;
 
     t0 := Runtime();
     before := Length(groups);
     byInv := rec();
     unique := [];
-    maxBucket := 20;
+    # Option B: modest maxBucket bump when using rich invariants.
+    if USE_RICH_INTERLAYER_INV then
+        maxBucket := 50;
+    else
+        maxBucket := 20;
+    fi;
     totalChecked := 0;
     totalFound := 0;
 
     for H in groups do
-        orbSizes := SortedList(List(Orbits(H, [1..degree]), Length));
-        key := String([Size(H), orbSizes, AbelianInvariants(H), DerivedLength(H)]);
+        key := _InterLayerInvariantKey(H, degree);
         if not IsBound(byInv.(key)) then
             byInv.(key) := [];
         fi;
@@ -2401,9 +2435,9 @@ _InterLayerDedup := function(groups, norm, degree)
             Add(unique, H);
         fi;
 
-        # Early exit: if checked 200+ pairs with no duplicates, stop
-        # (remaining groups are likely all distinct under this norm)
-        if totalChecked >= 200 and totalFound = 0 then
+        # Early exit: only apply when NOT using rich invariants
+        # (with rich invariants we trust that remaining work is bounded by bucket size)
+        if not USE_RICH_INTERLAYER_INV and totalChecked >= 200 and totalFound = 0 then
             Append(unique, groups{[Position(groups, H)+1..Length(groups)]});
             Print("    Inter-layer dedup: ", before, " -> ", Length(unique),
                   " (early exit after ", totalChecked, " checks, ",
@@ -2413,11 +2447,121 @@ _InterLayerDedup := function(groups, norm, degree)
     od;
 
     Print("    Inter-layer dedup: ", before, " -> ", Length(unique),
-          " (", Runtime() - t0, "ms)\n");
+          " (", Runtime() - t0, "ms, ", totalChecked, " RA, ",
+          totalFound, " dups)\n");
     return unique;
 end;
 
 
+# _SnFastPathFPFSubdirects(Sn_factor, n_Sn, rest_subdirects)
+#
+# For each K in rest_subdirects (a subdirect product of the "rest" factors,
+# acting on points AFTER the S_n block), enumerate all Goursat subdirect
+# products of S_n x K.
+#
+# Uses the fact that S_n (n >= 5) has only 3 normal subgroups: {1}, A_n, S_n.
+# For each normal subgroup N_K of K:
+#   - If K/N_K is trivial: gives the full product S_n x K
+#   - If K/N_K = C_2: gives the diagonal {(s,k) : sgn(s)=0 iff k in N_K}
+#   - If K/N_K = S_n (rare): skip for now (would need explicit iso)
+#
+# Returns: list of generating sets (as perm groups) for each subdirect product.
+###############################################################################
+
+_SnFastPathFPFSubdirects := function(Sn_factor, n_Sn, rest_subdirects)
+    local results, K, An_gens, odd_perm, nsK, N, Q_size, k_outside,
+          diag_gens, diag, full_prod;
+
+    results := [];
+
+    # Precompute A_n generators and one odd permutation for S_n
+    An_gens := GeneratorsOfGroup(AlternatingGroup(n_Sn));
+    odd_perm := (1, 2);  # simplest transposition is always in S_n
+
+    for K in rest_subdirects do
+        # Case 1: full product S_n x K (always present)
+        full_prod := Group(Concatenation(GeneratorsOfGroup(Sn_factor),
+                                          GeneratorsOfGroup(K)));
+        Add(results, full_prod);
+
+        # Case 2: For each N ⊲ K with |K/N| = 2, build the diagonal
+        nsK := NormalSubgroups(K);
+        for N in nsK do
+            Q_size := Size(K) / Size(N);
+            if Q_size = 2 then
+                # Find an element of K outside N (representative of non-trivial coset)
+                k_outside := First(GeneratorsOfGroup(K), g -> not g in N);
+                if k_outside = fail then
+                    k_outside := First(Elements(K), g -> not g in N);
+                fi;
+                if k_outside = fail then continue; fi;
+                # Diagonal generators:
+                #   A_n generators (sign = 0, so must pair with elements in N)
+                #   N generators (in N, so must pair with even S_n elements)
+                #   (odd, k_outside): one off-diagonal pair
+                diag_gens := [];
+                Append(diag_gens, An_gens);
+                Append(diag_gens, GeneratorsOfGroup(N));
+                Add(diag_gens, odd_perm * k_outside);
+                diag := Group(diag_gens);
+                Add(results, diag);
+            fi;
+        od;
+    od;
+
+    return results;
+end;
+
+###############################################################################
+###############################################################################
+# _GoursatGlueGeneral(K, G, nsK, nsG, normArg)
+#
+# Enumerate all Goursat subdirect products of K x G (on disjoint point sets).
+# For each compatible pair (N_K, N_G) with K/N_K ≅ G/N_G, and for each
+# isomorphism phi (from Aut(Q)), build the subdirect product.
+#
+# normArg is accepted but currently unused (reserved for future local dedup).
+###############################################################################
+_GoursatGlueGeneral := function(K, G, nsK, nsG, normArg)
+    local results, N_K, N_G, Q_K_size, hom_K, hom_G, Q_K, Q_G, iso,
+          aut_group, a, phi, gens, gen_K, coset_K, target_coset, g_rep;
+    results := [];
+    for N_K in nsK do
+        Q_K_size := Size(K) / Size(N_K);
+        hom_K := NaturalHomomorphismByNormalSubgroup(K, N_K);
+        Q_K := ImagesSource(hom_K);
+        for N_G in nsG do
+            if Size(G) / Size(N_G) <> Q_K_size then continue; fi;
+            hom_G := NaturalHomomorphismByNormalSubgroup(G, N_G);
+            Q_G := ImagesSource(hom_G);
+            iso := IsomorphismGroups(Q_K, Q_G);
+            if iso = fail then continue; fi;
+            if Q_K_size = 1 then
+                gens := Concatenation(GeneratorsOfGroup(K),
+                                      GeneratorsOfGroup(G));
+                Add(results, Group(gens));
+            else
+                aut_group := AutomorphismGroup(Q_K);
+                for a in aut_group do
+                    phi := a * iso;
+                    gens := [];
+                    Append(gens, GeneratorsOfGroup(N_K));
+                    Append(gens, GeneratorsOfGroup(N_G));
+                    for gen_K in GeneratorsOfGroup(K) do
+                        coset_K := Image(hom_K, gen_K);
+                        target_coset := Image(phi, coset_K);
+                        g_rep := PreImagesRepresentative(hom_G, target_coset);
+                        Add(gens, gen_K * g_rep);
+                    od;
+                    Add(results, Group(gens));
+                od;
+            fi;
+        od;
+    od;
+    return results;
+end;
+
+###############################################################################
 # FindFPFClassesByLifting(P, shifted_factors, offsets)
 #
 # Main entry point: Find all FPF subdirect products of P by lifting
@@ -2441,7 +2585,7 @@ FindFPFClassesByLifting := function(P, shifted_factors, offsets, partNormalizer.
     # directly instead of layer-by-layer lifting. This avoids exponential
     # blowup when all chief layers have 100% FPF acceptance (e.g., C_2^8 =
     # V_4^4 combos produce 8 C_2 layers each multiplying parents by ~14x).
-    if IsAbelian(P) and Size(P) <= 512 then
+    if IsAbelian(P) and Size(P) <= 256 then
         t0_fast := Runtime();
         orbits := List(shifted_factors, G -> MovedPoints(G));
         allSubs := AllSubgroups(P);
@@ -2514,6 +2658,182 @@ FindFPFClassesByLifting := function(P, shifted_factors, offsets, partNormalizer.
         fi;
     fi;
 
+    # FAST PATH 4: S_n short-circuit (n >= 5).
+    # When any factor is S_n for n >= 5, the expensive non-solvable complement
+    # path (Aut(A_n) reduction) dominates runtime. But S_n has only 3 normal
+    # subgroups, so we can use Goursat directly: recursively enumerate subdirect
+    # products of the "rest" factors, then glue each with S_n via the sign map.
+    if Length(shifted_factors) >= 3 then
+        fpf := CallFuncList(function()
+            local sn_idx, sn_factor, rest_factors, rest_offsets, rest_product,
+                  rest_subdirects, t0_sn, results, sn_moved, rest_points,
+                  rest_P, i;
+            sn_idx := fail;
+            for i in [1..Length(shifted_factors)] do
+                if NrMovedPoints(shifted_factors[i]) >= 5 and
+                   IsNaturalSymmetricGroup(shifted_factors[i]) then
+                    sn_idx := i;
+                    break;
+                fi;
+            od;
+            if sn_idx = fail then return fail; fi;
+            t0_fast := Runtime();
+            sn_factor := shifted_factors[sn_idx];
+            sn_moved := MovedPoints(sn_factor);
+            rest_factors := Concatenation(
+                shifted_factors{[1..sn_idx-1]},
+                shifted_factors{[sn_idx+1..Length(shifted_factors)]});
+            rest_offsets := Concatenation(
+                offsets{[1..sn_idx-1]},
+                offsets{[sn_idx+1..Length(offsets)]});
+            # Build rest product P
+            rest_P := Group(Concatenation(List(rest_factors,
+                GeneratorsOfGroup)));
+            # Recursively enumerate subdirect products of rest
+            rest_subdirects := FindFPFClassesByLifting(
+                rest_P, rest_factors, rest_offsets);
+            if rest_subdirects = fail then return fail; fi;
+            Print("  S_n fast path: |rest|=", Length(rest_factors),
+                  " factors, ", Length(rest_subdirects), " rest subdirects, ");
+            # Glue each rest subdirect with S_n via Goursat
+            results := _SnFastPathFPFSubdirects(sn_factor,
+                Length(sn_moved), rest_subdirects);
+            Print(Length(results), " total (",
+                  Runtime() - t0_fast, "ms)\n");
+            return results;
+        end, []);
+        if fpf <> fail then
+            return fpf;
+        fi;
+    fi;
+
+    # FAST PATH 5: D_4^3 cache for combos with 3+ TG(4,3) factors.
+    # When the combo contains 3+ copies of D_4 = TG(4,3), use the precomputed
+    # D_4^3 cache (264 N-orbit reps) + Goursat gluing with the rest.
+    # This avoids the exponential complement explosion in D_4^k chief series.
+    if Length(shifted_factors) >= 3 and IsBound(D4_CUBE_CACHE) then
+        fpf := CallFuncList(function()
+            local d4_indices, rest_indices, n_d4, d4_factors, rest_factors,
+                  rest_offsets, rest_P, rest_subdirects, rest_nsubs,
+                  cacheGroups, results, K, Kprime, nsK, nsKprime,
+                  t0_d4, i, N_rest, rest_NReps,
+                  d4_offsets, remap, p, blk, pos_in_blk, g, img, shiftedGens;
+            # Find D_4 = TG(4,3) factors
+            d4_indices := Filtered([1..Length(shifted_factors)], i ->
+                NrMovedPoints(shifted_factors[i]) = 4 and
+                TransitiveIdentification(shifted_factors[i]) = 3);
+            n_d4 := Length(d4_indices);
+            if n_d4 < 3 then return fail; fi;
+            # For now, handle exactly 3 D_4 factors (use first 3 in d4_indices)
+            if n_d4 > 3 then return fail; fi;  # TODO: D_4^4 cache
+            t0_fast := Runtime();
+            # Separate into D_4^3 and rest
+            rest_indices := Filtered([1..Length(shifted_factors)],
+                i -> not i in d4_indices);
+
+            # Build remapping from cache domain [1..12] to actual D_4 offsets.
+            # Cache assumes D_4 factors at offsets [0, 4, 8].
+            # Actual offsets come from offsets{d4_indices}.
+            d4_offsets := offsets{d4_indices};
+            remap := [];
+            for p in [1..12] do
+                blk := QuoInt(p - 1, 4) + 1;        # which D_4 block (1,2,3)
+                pos_in_blk := (p - 1) mod 4 + 1;     # position within block
+                remap[p] := d4_offsets[blk] + pos_in_blk;
+            od;
+
+            if Length(rest_indices) = 0 then
+                # Pure D_4^3: remap cache to actual offsets
+                if remap = [1..12] then
+                    cacheGroups := List(D4_CUBE_CACHE, gens -> Group(gens));
+                else
+                    cacheGroups := List(D4_CUBE_CACHE, function(gens)
+                        local shifted_gens, g, img, maxPt, p;
+                        maxPt := Maximum(remap);
+                        shifted_gens := [];
+                        for g in gens do
+                            img := [1..maxPt];
+                            for p in [1..12] do
+                                img[remap[p]] := remap[p^g];
+                            od;
+                            Add(shifted_gens, PermList(img));
+                        od;
+                        return Group(shifted_gens);
+                    end);
+                fi;
+                Print("  D_4^3 cache fast path: ", Length(cacheGroups),
+                      " reps (", Runtime() - t0_fast, "ms)\n");
+                return cacheGroups;
+            fi;
+            rest_factors := shifted_factors{rest_indices};
+            rest_offsets := offsets{rest_indices};
+            # Enumerate subdirect products of the rest
+            rest_P := Group(Concatenation(List(rest_factors,
+                GeneratorsOfGroup)));
+            rest_subdirects := FindFPFClassesByLifting(
+                rest_P, rest_factors, rest_offsets);
+            # Dedup rest subdirects under their normalizer
+            N_rest := BuildPerComboNormalizer(
+                List(rest_factors, NrMovedPoints), rest_factors,
+                Maximum(List(rest_factors, f -> Maximum(MovedPoints(f)))));
+            rest_NReps := [];
+            for Kprime in rest_subdirects do
+                found := false;
+                for K in rest_NReps do
+                    if Size(K) = Size(Kprime) and
+                       RepresentativeAction(N_rest, Kprime, K) <> fail then
+                        found := true; break;
+                    fi;
+                od;
+                if not found then Add(rest_NReps, Kprime); fi;
+            od;
+            Print("  D_4^3 fast path: ", Length(rest_NReps),
+                  " rest subdirects (sizes: ",
+                  List(rest_NReps, Size), ")\n");
+            # Load D_4^3 cache, remapped to actual offsets
+            cacheGroups := List(D4_CUBE_CACHE, function(gens)
+                local shifted_gens, g, img, maxPt, p;
+                maxPt := Maximum(remap);
+                shifted_gens := [];
+                for g in gens do
+                    img := [1..maxPt];
+                    for p in [1..12] do
+                        img[remap[p]] := remap[p^g];
+                    od;
+                    Add(shifted_gens, PermList(img));
+                od;
+                return Group(shifted_gens);
+            end);
+            # Pre-compute NormalSubgroups for rest factors (avoid redundant calls)
+            rest_nsubs := List(rest_NReps, Kp -> NormalSubgroups(Kp));
+            # Goursat glue each (K in cache, K' in rest subdirects)
+            # with local per-pair dedup using normArg
+            results := [];
+            for i in [1..Length(cacheGroups)] do
+                K := cacheGroups[i];
+                nsK := NormalSubgroups(K);
+                for j in [1..Length(rest_NReps)] do
+                    Kprime := rest_NReps[j];
+                    nsKprime := rest_nsubs[j];
+                    Append(results,
+                        _GoursatGlueGeneral(K, Kprime, nsK, nsKprime,
+                                             normArg));
+                od;
+                if i mod 25 = 0 then
+                    Print("  D_4^3 cache ", i, "/", Length(cacheGroups),
+                          ": ", Length(results), " candidates so far (",
+                          Int((Runtime() - t0_fast)/1000), "s)\n");
+                fi;
+            od;
+            Print("  D_4^3 fast path: ", Length(results),
+                  " candidates (", Int((Runtime() - t0_fast)/1000), "s)\n");
+            return results;
+        end, []);
+        if fpf <> fail then
+            return fpf;
+        fi;
+    fi;
+
     # Compute chief series with coprime-first reordering for direct products.
     # For multi-factor products (k >= 2), reorder to process odd-prime (coprime)
     # layers first — these have growth factor 1 (Schur-Zassenhaus), keeping
@@ -2558,6 +2878,13 @@ FindFPFClassesByLifting := function(P, shifted_factors, offsets, partNormalizer.
         if Length(current) > 20 or numLayers > 3 then
             Print("    >> Layer ", i, "/", numLayers, ": |M/N|=", layerSize,
                   ", ", Length(current), " parents\n");
+            if IsBound(_HEARTBEAT_FILE) and _HEARTBEAT_FILE <> "" then
+                PrintTo(_HEARTBEAT_FILE, "alive ",
+                        Int(Runtime() / 1000), "s ",
+                        _CURRENT_COMBO, " layer ", i, "/",
+                        numLayers, " |M/N|=", layerSize, " ",
+                        Length(current), " parents\n");
+            fi;
         fi;
 
         t0_layer := Runtime();
@@ -2576,14 +2903,26 @@ FindFPFClassesByLifting := function(P, shifted_factors, offsets, partNormalizer.
 
         # Inter-layer dedup: prevent exponential parent count blowup.
         # Uses partition normalizer stabilizer for RA (catches swaps of equal
-        # factors). Early exit after 200 fruitless RA checks caps overhead.
-        # Threshold 200: catch blowup before it gets exponential.
-        if i < numLayers and normArg <> fail and Length(current) > 200 then
+        # factors). With rich invariants (USE_RICH_INTERLAYER_INV), lower the
+        # trigger threshold since the dedup is much more effective.
+        if i < numLayers and normArg <> fail and Length(current) > 100 then
             current := _InterLayerDedup(current, outerNormForLayer[i],
                                          LargestMovedPoint(P));
         fi;
 
     od;
+
+    # POST-LIFT GF(2) DEDUP: For elementary abelian P (C_2^d), replace the
+    # expensive per-group RepresentativeAction dedup with GF(2) subspace
+    # orbit computation under the partition normalizer. This turns O(N^2 * RA)
+    # into O(N * |gens|) using integer-packed RREF BFS.
+    # The caller's incrementalDedup still handles cross-combo dedup, but
+    # within this combo the GF(2) BFS is orders of magnitude faster.
+    if IsElementaryAbelian(P) and Size(P) > 1 and normArg <> fail
+       and Length(current) > 50 then
+        Print("    GF(2) post-lift dedup: ", Length(current), " candidates\n");
+        current := _DeduplicateEAFPFbyGF2Orbits(P, current, normArg);
+    fi;
 
     return current;
 end;
