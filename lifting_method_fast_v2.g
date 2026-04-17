@@ -1500,6 +1500,7 @@ RESTART_AFTER_SECONDS := 3600;
 _FORCE_RESTART := false;
 _restartClock := 0;
 _ckpt_partial_start := 0;
+_CKPT_SAVED_CODE_HASH := fail;  # set on resume from checkpoint code hash
 _CURRENT_COMBO := "";
 
 # ComputeSubgroupInvariant(H)
@@ -1896,6 +1897,43 @@ _BackupFile := function(filepath)
     CloseStream(out);
 end;
 
+# _ComputeCodeHash()
+# Returns a hash string covering all files that affect candidate generation
+# order. Used to invalidate dedup-resume positions if any of these files
+# change (since candidate order would shift and skipping early candidates
+# could miss orbit representatives).
+#
+# Files hashed:
+# - lifting_algorithm.g: D_4^3 fast path, _GoursatGlueGeneral, lifting
+# - lifting_method_fast_v2.g: FindSubdirectsForPartitionWith2s, etc.
+# - database/d4_cube_cache.g: the 264 D_4^3 cache reps + their order
+_ComputeCodeHash := function()
+    local files, h, f, content, n, k, i;
+    files := [
+        "C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g",
+        "C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g",
+        "C:/Users/jeffr/Downloads/Lifting/database/d4_cube_cache.g"
+    ];
+    h := 1;
+    for f in files do
+        content := StringFile(f);
+        if content = fail then continue; fi;
+        # Mix in length and sampled character codes (every 64 bytes)
+        # for a fast hash that catches any meaningful change.
+        n := Length(content);
+        h := (h * 1000003 + n) mod (2^60);
+        # GAP's [1, 65 .. N] range requires (N-1) divisible by 64, which
+        # fails for arbitrary file lengths. Iterate manually.
+        for k in [0..QuoInt(n - 1, 64)] do
+            i := 1 + k * 64;
+            if i <= n then
+                h := (h * 1000003 + IntChar(content[i])) mod (2^60);
+            fi;
+        od;
+    od;
+    return String(h);
+end;
+
 _SaveCheckpoint := function(ckptFile, completedKeys, all_fpf,
                             totalCandidates, addedCount, invKeys...)
     local i, gens, s, _invKeys;
@@ -2122,7 +2160,8 @@ FindFPFClassesForPartition := function(n, partition)
           totalCandidates, incrementalDedup, off_acc,
           ckptFile, ckptLogFile, ckptData, completedKeySet, completedKeyList,
           comboCount, lastCkptTime, partStr, gens, H, fpfBeforeCombo,
-          usePerComboNorm, comboNormCache, currentN, _richInvActive;
+          usePerComboNorm, comboNormCache, currentN, _richInvActive,
+          _partial_resume_partial_pos;
 
     startTime := Runtime();
 
@@ -2173,6 +2212,7 @@ FindFPFClassesForPartition := function(n, partition)
     completedKeySet := rec();
     completedKeyList := [];
     comboCount := 0;
+    _partial_resume_partial_pos := 0;  # set by IterateCombinations on resume
     _FORCE_RESTART := false;
     _restartClock := Runtime();
     lastCkptTime := Runtime();
@@ -2229,16 +2269,18 @@ FindFPFClassesForPartition := function(n, partition)
                 _CKPT_TOTAL_CANDIDATES := 0;
                 _CKPT_ADDED_COUNT := 0;
             fi;
-            _CKPT_PARTIAL_START := 0;
-            Read(ckptLogFile);
-            # Preserve invKeys from .g base if available.
-            # They cover the first N groups (from .g); remaining groups (from .log)
-            # will have their inv keys recomputed during indexing.
+            # Must initialize _CKPT_ALL_INV_KEYS: the .log file has
+            # Add(_CKPT_ALL_INV_KEYS, ...) statements. If unbound, Read()
+            # errors on the first INV_KEYS Add and silently stops,
+            # dropping the remaining (potentially thousands of) groups.
             if ckptData <> fail and IsBound(ckptData.invKeys) then
-                _CKPT_INV_KEYS := ckptData.invKeys;
+                _CKPT_ALL_INV_KEYS := ShallowCopy(ckptData.invKeys);
             else
-                _CKPT_INV_KEYS := fail;
+                _CKPT_ALL_INV_KEYS := [];
             fi;
+            _CKPT_PARTIAL_START := 0;
+            _CKPT_CODE_HASH := fail;  # set by .log if a partial checkpoint exists
+            Read(ckptLogFile);
             ckptData := rec(
                 completedKeys := _CKPT_COMPLETED_KEYS,
                 allFpfGens := _CKPT_ALL_FPF_GENS,
@@ -2248,14 +2290,20 @@ FindFPFClassesForPartition := function(n, partition)
                                    and ckptData.richInvActive = true),
                 partialStart := _CKPT_PARTIAL_START
             );
-            if _CKPT_INV_KEYS <> fail then
-                ckptData.invKeys := _CKPT_INV_KEYS;
+            # Attach inv keys if lengths match (same as _LoadCheckpointLog)
+            if Length(_CKPT_ALL_INV_KEYS) = Length(_CKPT_ALL_FPF_GENS) then
+                ckptData.invKeys := _CKPT_ALL_INV_KEYS;
+            fi;
+            # Propagate code hash for dedup-resume safety check
+            if _CKPT_CODE_HASH <> fail then
+                ckptData.codeHash := _CKPT_CODE_HASH;
             fi;
             Unbind(_CKPT_COMPLETED_KEYS);
             Unbind(_CKPT_ALL_FPF_GENS);
+            Unbind(_CKPT_ALL_INV_KEYS);
             Unbind(_CKPT_TOTAL_CANDIDATES);
             Unbind(_CKPT_ADDED_COUNT);
-            Unbind(_CKPT_INV_KEYS);
+            Unbind(_CKPT_CODE_HASH);
             Unbind(_CKPT_PARTIAL_START);
             Print("  CHECKPOINT: Deltas applied: ", Length(ckptData.allFpfGens),
                   " groups total, ", Length(ckptData.completedKeys), " combos\n");
@@ -2361,6 +2409,14 @@ FindFPFClassesForPartition := function(n, partition)
                     fi;
                 od;
                 _baseGroupCount := 0;  # all groups are in all_fpf
+                # Populate allInvKeys from saved keys so PRE-INDEX can reuse
+                # them instead of recomputing (saves ~1s × N_groups).
+                if IsBound(ckptData.invKeys) and
+                   Length(ckptData.invKeys) = Length(ckptData.allFpfGens) then
+                    allInvKeys := ShallowCopy(ckptData.invKeys);
+                    Print("  CHECKPOINT: Loaded ", Length(allInvKeys),
+                          " saved invariant keys\n");
+                fi;
             else
                 # Fast resume: skip group rebuilding. Cross-combo duplicates
                 # are impossible, so old groups are never needed again.
@@ -2383,6 +2439,12 @@ FindFPFClassesForPartition := function(n, partition)
                 _ckpt_partial_start := ckptData.partialStart;
             else
                 _ckpt_partial_start := 0;
+            fi;
+            # Save code hash for dedup-resume safety check
+            if IsBound(ckptData.codeHash) then
+                _CKPT_SAVED_CODE_HASH := ckptData.codeHash;
+            else
+                _CKPT_SAVED_CODE_HASH := fail;
             fi;
             # Build completed key set for O(1) lookup
             for i in [1..Length(ckptData.completedKeys)] do
@@ -2456,7 +2518,7 @@ FindFPFClassesForPartition := function(n, partition)
     incrementalDedup := function(newResults)
         local H, before, _dedupIdx, _dedupTotal, _lastDedupProgress, _beforeAdd,
               _chunkStart, _chunkEnd, _i, _lastCkptPos, _inv, _key, _preIdx,
-              _lastRACount;
+              _lastRACount, _ck, _ckMax, _ckPos;
         # Reset byInvariant for this combo. If we pre-built the index
         # at startup (_hasPartialResume), keep it for the FIRST combo
         # (the interrupted one), then reset normally for subsequent combos.
@@ -2479,6 +2541,54 @@ FindFPFClassesForPartition := function(n, partition)
         _lastRACount := _DEDUP_RA_COUNT;
         _lastCkptPos := before;  # tracks last checkpoint position in all_fpf
         _chunkStart := 1;
+        # Fast-forward: if the current combo has _dedup_partial_X checkpoints,
+        # we already processed candidates 1..X in a prior run. Goursat and
+        # lifting are deterministic (same cache order, same normal-subgroup
+        # enumeration), so the candidate list is identical across runs. Skip
+        # the first X candidates to avoid re-checking them.
+        #
+        # SAFETY 1: only fast-forward if the CURRENT combo is the one whose
+        # partial state we inherited. _partial_resume_partial_pos is set at
+        # combo start from _ckpt_partial_start and reset to 0 after the combo
+        # finishes, so it's > 0 exactly for the interrupted combo. Without
+        # this guard, stale _dedup_partial_X keys left in the log by a prior
+        # completed combo would cause subsequent combos to incorrectly skip
+        # their first N candidates (missing FPF classes).
+        #
+        # SAFETY 2: only fast-forward if _CKPT_CODE_HASH (saved at first partial
+        # checkpoint) matches current code hash. If any of lifting_algorithm.g,
+        # lifting_method_fast_v2.g, or d4_cube_cache.g changed, candidate order
+        # may have shifted and skipping early candidates could miss orbit reps.
+        if _partial_resume_partial_pos > 0 then
+            _ckMax := 0;
+            for _ck in completedKeyList do
+                if Length(_ck) >= 15 and _ck{[1..15]} = "_dedup_partial_" then
+                    _ckPos := Int(_ck{[16..Length(_ck)]});
+                    if _ckPos > _ckMax then _ckMax := _ckPos; fi;
+                fi;
+            od;
+            if _ckMax > 0 and _ckMax < _dedupTotal then
+                if IsBound(_CKPT_SAVED_CODE_HASH) and
+                   _CKPT_SAVED_CODE_HASH <> fail and
+                   _CKPT_SAVED_CODE_HASH = _ComputeCodeHash() then
+                    Print("    DEDUP RESUME: code hash matches, skipping first ",
+                          _ckMax, " candidates (already processed), starting at ",
+                          _ckMax + 1, "/", _dedupTotal, "\n");
+                    _chunkStart := _ckMax + 1;
+                    _dedupIdx := _ckMax;
+                    _lastCkptPos := Length(all_fpf);
+                    # Null out skipped entries so GC can reclaim them immediately.
+                    for _i in [1.._ckMax] do
+                        newResults[_i] := 0;
+                    od;
+                    GASMAN("collect");
+                else
+                    Print("    DEDUP RESUME: code hash mismatch ",
+                          "(or no saved hash), processing all ", _dedupTotal,
+                          " candidates from scratch (correctness over speed)\n");
+                fi;
+            fi;
+        fi;
         while _chunkStart <= _dedupTotal do
             _chunkEnd := Minimum(_chunkStart + DEDUP_CHUNK_SIZE - 1, _dedupTotal);
             for _i in [_chunkStart.._chunkEnd] do
@@ -2518,9 +2628,22 @@ FindFPFClassesForPartition := function(n, partition)
                 # Mid-combo checkpoint: save only NEW groups since last chunk save
                 if ckptLogFile <> "" and Length(all_fpf) > _lastCkptPos then
                     # On first partial save, record where partial groups start
+                    # and the code hash (so resume can verify candidate order
+                    # is still the same across runs). When this combo was
+                    # already partially saved in a prior session (_partial
+                    # _resume_partial_pos > 0), keep that earlier position
+                    # so a future resume sees ALL partial groups from all
+                    # sessions, not just this session's chunk.
                     if _lastCkptPos = before then
-                        AppendTo(ckptLogFile, "_CKPT_PARTIAL_START := ",
-                                 before + 1, ";\n");
+                        if _partial_resume_partial_pos > 0 then
+                            AppendTo(ckptLogFile, "_CKPT_PARTIAL_START := ",
+                                     _partial_resume_partial_pos, ";\n");
+                        else
+                            AppendTo(ckptLogFile, "_CKPT_PARTIAL_START := ",
+                                     before + 1, ";\n");
+                        fi;
+                        AppendTo(ckptLogFile, "_CKPT_CODE_HASH := \"",
+                                 _ComputeCodeHash(), "\";\n");
                     fi;
                     _AppendCheckpointDelta(ckptLogFile,
                         Concatenation("_dedup_partial_", String(_chunkEnd)),
@@ -2604,7 +2727,27 @@ FindFPFClassesForPartition := function(n, partition)
             Print("    >> combo [", cacheKey, "] factors=",
                   List(currentFactors, f -> [NrMovedPoints(f), TransitiveIdentification(f)]),
                   " |P|=", Product(List(currentFactors, Size)), "\n");
-            fpfBeforeCombo := Length(all_fpf);
+            # If we resumed from a partial-dedup checkpoint, the groups loaded
+            # into all_fpf (positions _ckpt_partial_start..end) belong to THIS
+            # combo (the one that was interrupted). Set fpfBeforeCombo so the
+            # slice [fpfBeforeCombo+1..end] includes them when writing the
+            # combo file. Otherwise the combo file (and summary.txt) would
+            # silently undercount by the resumed group count.
+            # _partial_resume_partial_pos preserves the original partial-start
+            # position so that subsequent mid-combo checkpoints in this run
+            # remain consistent across multiple resume cycles.
+            if _ckpt_partial_start > 0 and
+               Length(all_fpf) >= _ckpt_partial_start then
+                fpfBeforeCombo := _ckpt_partial_start - 1;
+                _partial_resume_partial_pos := _ckpt_partial_start;
+                Print("    PARTIAL RESUME: combo includes ",
+                      Length(all_fpf) - fpfBeforeCombo,
+                      " groups from prior partial dedup\n");
+                _ckpt_partial_start := 0;  # only apply once
+            else
+                fpfBeforeCombo := Length(all_fpf);
+                _partial_resume_partial_pos := 0;
+            fi;
             _combo_succeeded := true;  # assume success; set false on failure
             _preComboCandidates := totalCandidates;
             _comboStartTime := Runtime();
@@ -2678,6 +2821,22 @@ FindFPFClassesForPartition := function(n, partition)
                                 _c2Result := FindSubdirectsForPartitionWith2s(
                                     partition, currentFactors, _shifted, _offs);
                                 if _c2Result <> fail then
+                                    # GF(2) orbit dedup for elementary abelian P
+                                    # (common case: all factors are C_2, P=C_2^k).
+                                    # FindSubdirectsForPartitionWith2s returns
+                                    # all subdirects without N-orbit dedup.
+                                    if Length(_c2Result) > 50 then
+                                        _P := Group(Concatenation(List(_shifted, GeneratorsOfGroup)));
+                                        if IsElementaryAbelian(_P) then
+                                            Print("    GF(2) post-C2 dedup: ",
+                                                  Length(_c2Result),
+                                                  " candidates\n");
+                                            _c2Result := _DeduplicateEAFPFbyGF2Orbits(
+                                                _P, _c2Result, currentN);
+                                            Print("    GF(2) post-C2 dedup: reduced to ",
+                                                  Length(_c2Result), "\n");
+                                        fi;
+                                    fi;
                                     if Length(_c2Result) <= MAX_CACHE_RESULTS then
                                         FPF_SUBDIRECT_CACHE.(cacheKey) := _c2Result;
                                     else
@@ -2767,6 +2926,9 @@ FindFPFClassesForPartition := function(n, partition)
                     totalCandidates - _preComboCandidates,
                     Runtime() - _comboStartTime);
             fi;
+            # Reset partial-resume tracking after this combo finishes;
+            # subsequent combos start fresh.
+            _partial_resume_partial_pos := 0;
 
             # Checkpoint save: record this combo as completed
             # Only if it succeeded (failed combos should be retried on resume)
@@ -2784,6 +2946,18 @@ FindFPFClassesForPartition := function(n, partition)
                         totalCandidates, addedCount,
                         _baseGroupCount + Length(all_fpf),
                         allInvKeys{[fpfBeforeCombo+1..Length(allInvKeys)]});
+                    # Reset _CKPT_PARTIAL_START in the log: the combo is now fully
+                    # complete, so any partial-chunk markers from mid-dedup are
+                    # stale. Without this reset, a crash-and-resume after this point
+                    # would replay the stale _CKPT_PARTIAL_START from earlier in
+                    # the log, causing the NEXT combo's slice to include all prior
+                    # groups (inflated combo files seen in [8,4,2,2,2] bug).
+                    AppendTo(ckptLogFile, "_CKPT_PARTIAL_START := 0;\n");
+                    # Also reset _CKPT_CODE_HASH so a future resume can't reuse
+                    # the partial-dedup fast-forward for a LATER combo. The
+                    # fast-forward guard also checks _partial_resume_partial_pos,
+                    # but clearing the hash here is a second line of defense.
+                    AppendTo(ckptLogFile, "_CKPT_CODE_HASH := fail;\n");
                     lastCkptTime := Runtime();
                     Print("    CHECKPOINT SAVED (",
                           Length(completedKeyList), " combos, ",
