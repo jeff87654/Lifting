@@ -520,10 +520,14 @@ _EnumerateNormalsForQGroups := function(H, q_groups)
         return Filtered(NormalSubgroups(H), K -> K <> H);
     fi;
     if Length(q_groups) = 0 then return []; fi;
-    # Heuristic: use direct NormalSubgroups for moderate-size H or for H
-    # whose derived subgroup is the whole group (simple, perfect groups
-    # have very few normals).
-    use_direct := Size(H) <= 1000000;
+    # Direct NormalSubgroups + Q-id filter is only cheaper than the smart
+    # per-Q routing below when the largest Q is too big for GQuotients to
+    # finish (|Q| > 200 in practice).  For everything else — and especially
+    # for prime Q, where the fast path is just MaximalSubgroupClassReps(A)
+    # on the abelianization — fall through to the per-Q routing.  This was
+    # gated on |H| <= 10^6 by mistake, which silently sent every typical
+    # H (|H|=4096, 1536, 768, ...) through the slow NS path.
+    use_direct := Maximum(List(q_groups, Size)) > 200;
     if use_direct then
         qids_set := Set(List(q_groups, SafeId));
         all_normals := Filtered(NormalSubgroups(H), K -> K <> H);
@@ -1294,10 +1298,14 @@ _EnumerateNormalsForQGroups := function(H, q_groups)
         return Filtered(NormalSubgroups(H), K -> K <> H);
     fi;
     if Length(q_groups) = 0 then return []; fi;
-    # Heuristic: use direct NormalSubgroups for moderate-size H or for H
-    # whose derived subgroup is the whole group (simple, perfect groups
-    # have very few normals).
-    use_direct := Size(H) <= 1000000;
+    # Direct NormalSubgroups + Q-id filter is only cheaper than the smart
+    # per-Q routing below when the largest Q is too big for GQuotients to
+    # finish (|Q| > 200 in practice).  For everything else — and especially
+    # for prime Q, where the fast path is just MaximalSubgroupClassReps(A)
+    # on the abelianization — fall through to the per-Q routing.  This was
+    # gated on |H| <= 10^6 by mistake, which silently sent every typical
+    # H (|H|=4096, 1536, 768, ...) through the slow NS path.
+    use_direct := Maximum(List(q_groups, Size)) > 200;
     if use_direct then
         qids_set := Set(List(q_groups, SafeId));
         all_normals := Filtered(NormalSubgroups(H), K -> K <> H);
@@ -2106,10 +2114,14 @@ _EnumerateNormalsForQGroups := function(H, q_groups)
         return Filtered(NormalSubgroups(H), K -> K <> H);
     fi;
     if Length(q_groups) = 0 then return []; fi;
-    # Heuristic: use direct NormalSubgroups for moderate-size H or for H
-    # whose derived subgroup is the whole group (simple, perfect groups
-    # have very few normals).
-    use_direct := Size(H) <= 1000000;
+    # Direct NormalSubgroups + Q-id filter is only cheaper than the smart
+    # per-Q routing below when the largest Q is too big for GQuotients to
+    # finish (|Q| > 200 in practice).  For everything else — and especially
+    # for prime Q, where the fast path is just MaximalSubgroupClassReps(A)
+    # on the abelianization — fall through to the per-Q routing.  This was
+    # gated on |H| <= 10^6 by mistake, which silently sent every typical
+    # H (|H|=4096, 1536, 768, ...) through the slow NS path.
+    use_direct := Maximum(List(q_groups, Size)) > 200;
     if use_direct then
         qids_set := Set(List(q_groups, SafeId));
         all_normals := Filtered(NormalSubgroups(H), K -> K <> H);
