@@ -48,6 +48,8 @@ predict_species_tmp/
 predict_species_tmp_q2_test/
 smoke_test_fix_tmp/
 predict_species_tmp_bespoke_4343_32/
+bench_enum_mr3/
+bench_enum_mr4/
 
 # Worker / scratch dirs
 debug_s15_orbital/
