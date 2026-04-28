@@ -51,6 +51,7 @@ predict_species_tmp_bespoke_4343_32/
 bench_enum_mr3/
 bench_enum_mr4/
 bench_fp_construct_tmp/
+bench_instrumented_tmp/
 
 # Worker / scratch dirs
 debug_s15_orbital/
