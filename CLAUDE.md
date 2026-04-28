@@ -1,5 +1,16 @@
 # Claude Code Instructions for Lifting Project
 
+## Git workflow (READ FIRST)
+
+This project is **under git** and `auto_snapshot.py` (a watchdog-based watcher) auto-commits every code change within ~10 seconds of save. Before editing ANY `.py` or `.g` file:
+
+1. Check `git status` — confirm you're starting from a known state.
+2. Edit normally. The watcher will commit automatically. You don't need to `git commit` by hand for routine edits.
+3. After a non-trivial change, run `git log --oneline -5` to confirm the snapshot landed. If the watcher isn't running, restart it: `python auto_snapshot.py` (Bash `run_in_background`).
+4. Use `git diff HEAD~1` to see exactly what last changed before re-editing — this is how regressions like the `_EnumerateNormalsForQGroups` `use_direct` gate get caught.
+5. **Never `git reset --hard`, `git push --force`, or amend old commits** — the snapshot history is the user's safety net. If you must roll back, use `git revert`.
+6. Tracked: `*.py`, `*.g`, `*.md`, `*.json`, `*.sh`, `*.ps1`. Ignored: `parallel_s*/`, `predict_species_tmp*/`, `*.log`, `*.txt`, `*.stdout`, `*.pdf`, `database/{tf_groups,fpf_subdirects,...}`, `lifting.ws`. See `.gitignore`.
+
 ## Project Goal
 
 **The goal of this project is the efficient computation of S14's conjugacy classes of subgroups.**
