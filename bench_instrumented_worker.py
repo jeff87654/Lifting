@@ -120,7 +120,7 @@ t0 := Runtime();
 Read("__CACHE__");
 Print("loaded LEFT cache in ", Runtime()-t0, "ms (", Length(H_CACHE), " entries)\n");
 
-T_R := TransitiveGroup(MR, 1);   # C_4
+T_R := TransitiveGroup(MR, __RIGHT_T__);   # production RIGHT
 N_TR := Normalizer(S_MR, T_R);
 
 # Build RIGHT cache entry the way the live code does (one entry per N_TR-orbit
@@ -268,6 +268,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--npairs", type=int, default=3)
     ap.add_argument("--start", type=int, default=1)
+    ap.add_argument("--right-t", type=int, default=1)
     args = ap.parse_args()
     sandbox = ROOT / "bench_instrumented_tmp"
     sandbox.mkdir(exist_ok=True)
@@ -280,6 +281,7 @@ def main():
          .replace("__EMIT__", str(emit).replace("\\", "/"))
          .replace("__CACHE__", str(CACHE_PATH).replace("\\", "/"))
          .replace("__START__", str(args.start))
+         .replace("__RIGHT_T__", str(args.right_t))
          .replace("__NPAIRS__", str(args.npairs)))
     g_path = sandbox / "bench.g"
     g_path.write_text(g, encoding="utf-8")
