@@ -171,8 +171,8 @@ T_R_shifted := T_R^shift_R;
 
 # Bench loop: for each H1 pair, find matching K's with RIGHT and time fp construction
 Print("\n=== timing per pair ===\n");
-Print(StringFormatted("{:>4} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>5}\n",
-                       "i", "|H1|", "n_match", "fps", "V0_ms", "V1_ms", "V2_ms", "vs_V0", "OK"));
+pad := function(x, w) local s; s := String(x); while Length(s) < w do s := Concatenation(" ", s); od; return s; end;
+Print(pad("i",5), pad("|H1|",7), pad("n_match",10), pad("fps",6), pad("V0_ms",9), pad("V1_ms",9), pad("V2_ms",9), pad("vs_V0",8), pad("OK",6), "\n");
 
 total_v0 := 0; total_v1 := 0; total_v2 := 0; total_fps := 0;
 
@@ -254,11 +254,10 @@ for i in [1..N_PAIRS] do
         if Size(fps_v0[j]) <> Size(fps_v2[j]) then ok := false; break; fi;
     od;
 
-    Print(StringFormatted("{:>4} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8.2f} {:>5}\n",
-                          i, Size(H1), n_match, Length(fps_v0),
-                          t_v0, t_v1, t_v2,
-                          Float(t_v0) / Float(Maximum(t_v2, 1)),
-                          When(ok, "OK", "DIFF")));
+    if ok then m_str := "OK"; else m_str := "DIFF"; fi;
+    speedup := String(Float(t_v0) / Float(Maximum(t_v2, 1)));
+    Print(pad(i,5), pad(Size(H1),7), pad(n_match,10), pad(Length(fps_v0),6),
+          pad(t_v0,9), pad(t_v1,9), pad(t_v2,9), pad(speedup{[1..Minimum(7,Length(speedup))]},8), pad(m_str,6), "\n");
 
     total_v0 := total_v0 + t_v0;
     total_v1 := total_v1 + t_v1;
