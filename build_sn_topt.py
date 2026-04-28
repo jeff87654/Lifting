@@ -108,6 +108,26 @@ def trailing_twos(partition):
     return n
 
 
+def left_class_count(left_combo, m_left, sn_dir):
+    """Read the # deduped: header from the LEFT source file to gate
+    super-batching.  Returns the class count, or 0 if source is missing
+    (which routes the LEFT to standalone-batch as a safe default)."""
+    parts = sorted([d for d, _ in left_combo], reverse=True)
+    part_str = "[" + ",".join(str(p) for p in parts) + "]"
+    src = Path(sn_dir) / str(m_left) / part_str / f"{combo_filename(left_combo)}.g"
+    try:
+        with open(src, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^# deduped:\s*(\d+)", line)
+                if m:
+                    return int(m.group(1))
+                if line.startswith("["):
+                    break  # no header found before generators
+    except OSError:
+        pass
+    return 0
+
+
 def is_complete_combo_file(path):
     """Verify a combo .g file is complete: # deduped: N matches the count of
     generator lines.  Returns True if valid, False if missing/truncated/inconsistent.
@@ -344,6 +364,10 @@ def main():
     ap.add_argument("--super-batch-jobs", type=int, default=1,
                     help="if >1, pack small batch-groups into super-batches with this many "
                          "total jobs each (default 1 = no super-batching)")
+    ap.add_argument("--left-heavy-threshold", type=int, default=1000,
+                    help="LEFT sources with > this many deduped classes always run as their "
+                         "own standalone batch (one fresh GAP per heavy LEFT) regardless of "
+                         "super-batching, to avoid GAP runtime degradation on long jobs")
     args = ap.parse_args()
 
     sn_out = Path(args.out)
@@ -410,6 +434,7 @@ def main():
         # Group key: (mode_for_predict_2factor, left_combo_tuple)
         from predict_2factor_topt import resolve_inputs as _resolve_inputs
         batch_groups = {}     # (left_combo) -> list of (combo, mode, output_path, partition)
+        left_m_for_combo = {} # left_combo -> m_left (for heavy-LEFT detection)
         c2_combos = []        # list of (combo, output_path, partition)
         wreath_combos = []    # list of (combo, output_path, partition)
 
@@ -438,6 +463,7 @@ def main():
                     continue
                 key = inputs["left_combo"]
                 batch_groups.setdefault(key, []).append((combo, rt, output_path, partition))
+                left_m_for_combo[key] = inputs["m_left"]
 
         # ---- Build task list (parallelizable) ----
         tasks = []   # list of (kind, key_for_msg, cmd, timeout)
@@ -485,9 +511,18 @@ def main():
             super_pack_groups = []
             super_pack_total_jobs = 0
 
+        n_heavy_routed = 0
         for left_combo, group_jobs in batch_groups.items():
             n_jobs = len(group_jobs)
-            if sb_jobs > 1 and n_jobs <= sb_threshold:
+            # Heavy LEFT (large class count) always gets standalone batch:
+            # GAP runtime degradation makes long-lived workers ~25x slower per
+            # fp after even 30 min, so each heavy LEFT deserves a fresh GAP.
+            m_left = left_m_for_combo.get(left_combo)
+            lsize = left_class_count(left_combo, m_left, sn_out) if m_left else 0
+            heavy = lsize > args.left_heavy_threshold
+            if heavy:
+                n_heavy_routed += 1
+            if not heavy and sb_jobs > 1 and n_jobs <= sb_threshold:
                 # Pack into super-batch.
                 super_pack_groups.append((left_combo, group_jobs))
                 super_pack_total_jobs += n_jobs
@@ -495,7 +530,7 @@ def main():
                 if super_pack_total_jobs >= sb_jobs:
                     flush_super_pack()
                 continue
-            # Big group OR no super-batching: standalone batch task.
+            # Heavy LEFT, big group, or no super-batching: standalone batch.
             batch_dir = pred_tmp / f"batch_n{n}_{combo_filename(left_combo)}"
             batch_dir.mkdir(parents=True, exist_ok=True)
             jobs_json = batch_dir / "jobs.json"
@@ -623,7 +658,8 @@ def main():
         else:
             print(f"[n={n}] dispatching {len(tasks)} tasks "
                   f"(batches={len(batch_groups)}, c2={len(c2_combos)}, "
-                  f"wreath={len(wreath_combos)}) on {args.workers} workers")
+                  f"wreath={len(wreath_combos)}, heavy_left={n_heavy_routed} "
+                  f"@>{args.left_heavy_threshold} classes) on {args.workers} workers")
             from concurrent.futures import ProcessPoolExecutor, as_completed
             n_done = 0
             with ProcessPoolExecutor(max_workers=args.workers) as pool:
