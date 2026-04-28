@@ -36,11 +36,12 @@ fi;
 
 ML := 14;
 MR := 4;
+START_IDX := __START__;
 N_PAIRS := __NPAIRS__;
 EMIT_GENS_PATH := "__EMIT__";
 
 Print("=== bench_instrumented_worker ===\n");
-Print("ML=", ML, " MR=", MR, " N_PAIRS=", N_PAIRS, "\n\n");
+Print("ML=", ML, " MR=", MR, " START_IDX=", START_IDX, " N_PAIRS=", N_PAIRS, "\n\n");
 
 # ---- helpers (verbatim from predict_2factor_topt.py) ------------------------
 ConjAction := function(K, g) return K^g; end;
@@ -148,7 +149,7 @@ hdr := function() Print(pad("i",4), pad("|H1|",6), pad("nmatch",7), pad("fps",6)
                        pad("bfs",6), pad("buildfp",8), pad("emit",6), pad("pair_total",11), "\n"); end;
 hdr();
 
-for i in [1..N_PAIRS] do
+for i in [START_IDX..(START_IDX + N_PAIRS - 1)] do
     # --- reconstruct H1 from cache entry ---
     t_pair := Runtime();
     t0 := Runtime();
@@ -266,6 +267,7 @@ QUIT;
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--npairs", type=int, default=3)
+    ap.add_argument("--start", type=int, default=1)
     args = ap.parse_args()
     sandbox = ROOT / "bench_instrumented_tmp"
     sandbox.mkdir(exist_ok=True)
@@ -277,6 +279,7 @@ def main():
          .replace("__LOG__", str(log).replace("\\", "/"))
          .replace("__EMIT__", str(emit).replace("\\", "/"))
          .replace("__CACHE__", str(CACHE_PATH).replace("\\", "/"))
+         .replace("__START__", str(args.start))
          .replace("__NPAIRS__", str(args.npairs)))
     g_path = sandbox / "bench.g"
     g_path.write_text(g, encoding="utf-8")
