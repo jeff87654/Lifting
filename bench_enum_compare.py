@@ -157,6 +157,7 @@ if n_total > 5000 then Add(sample_idx, 5000); fi;
 pad := function(x, w) local s; s := String(x); while Length(s) < w do s := Concatenation(" ", s); od; return s; end;
 Print(pad("idx",6), pad("|H|",8), pad("OLD_ms",10), pad("NEW_ms",10), pad("K_n",6), pad("match",7), "\n");
 
+m_str := "";
 for idx in sample_idx do
     H_gens := EvalString(gen_lines[idx]);
     H := Group(H_gens);
@@ -170,8 +171,9 @@ for idx in sample_idx do
     t_new := Runtime() - t0;
 
     match := Length(K_old) = Length(K_new) and Set(K_old) = Set(K_new);
+    if match then m_str := "OK"; else m_str := "DIFF"; fi;
     Print(pad(idx,6), pad(Size(H),8), pad(t_old,10), pad(t_new,10),
-          pad(Length(K_old),6), pad(When(match, "OK", "DIFF"),7), "\n");
+          pad(Length(K_old),6), pad(m_str,7), "\n");
 od;
 
 Print("\n=== done ===\n");
