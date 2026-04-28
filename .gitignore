@@ -52,6 +52,7 @@ bench_enum_mr3/
 bench_enum_mr4/
 bench_fp_construct_tmp/
 bench_instrumented_tmp/
+bench_instrumented_tmp_upfront/
 
 # Worker / scratch dirs
 debug_s15_orbital/

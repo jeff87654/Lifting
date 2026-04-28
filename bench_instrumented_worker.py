@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 LIFTING_WS_CYG = "/cygdrive/c/Users/jeffr/Downloads/Lifting/lifting.ws"
 CACHE_PATH = ROOT / "predict_species_tmp/_h_cache_topt/14/[4,4,4,2]/[2,1]_[4,3]_[4,3]_[4,3].g"
-EMIT_PATH = ROOT / "bench_instrumented_tmp/emit.g"
+EMIT_PATH = ROOT / "bench_instrumented_tmp/emit.g"  # legacy default; main() overrides
 
 GAP_DRIVER = r"""
 LogTo("__LOG__");
@@ -38,10 +38,12 @@ ML := 14;
 MR := 4;
 START_IDX := __START__;
 N_PAIRS := __NPAIRS__;
+UPFRONT := __UPFRONT__;
 EMIT_GENS_PATH := "__EMIT__";
 
 Print("=== bench_instrumented_worker ===\n");
-Print("ML=", ML, " MR=", MR, " START_IDX=", START_IDX, " N_PAIRS=", N_PAIRS, "\n\n");
+Print("ML=", ML, " MR=", MR, " START_IDX=", START_IDX, " N_PAIRS=", N_PAIRS,
+      " UPFRONT=", UPFRONT, "\n\n");
 
 # ---- helpers (verbatim from predict_2factor_topt.py) ------------------------
 ConjAction := function(K, g) return K^g; end;
@@ -149,11 +151,23 @@ hdr := function() Print(pad("i",4), pad("|H1|",6), pad("nmatch",7), pad("fps",6)
                        pad("bfs",6), pad("buildfp",8), pad("emit",6), pad("pair_total",11), "\n"); end;
 hdr();
 
+if UPFRONT = 1 then
+    Print("UPFRONT mode: reconstructing all ", N_PAIRS, " H1 entries before loop...\n");
+    t_pre := Runtime();
+    H1DATA_LIST := List([START_IDX..(START_IDX + N_PAIRS - 1)],
+                       i -> ReconstructHData(H_CACHE[i], S_ML));
+    Print("  upfront reconstruct done in ", Runtime() - t_pre, "ms\n\n");
+fi;
+
 for i in [START_IDX..(START_IDX + N_PAIRS - 1)] do
     # --- reconstruct H1 from cache entry ---
     t_pair := Runtime();
     t0 := Runtime();
-    H1data := ReconstructHData(H_CACHE[i], S_ML);
+    if UPFRONT = 1 then
+        H1data := H1DATA_LIST[i - START_IDX + 1];
+    else
+        H1data := ReconstructHData(H_CACHE[i], S_ML);
+    fi;
     t_recon := Runtime() - t0;
     H1 := H1data.H;
 
@@ -269,12 +283,15 @@ def main():
     ap.add_argument("--npairs", type=int, default=3)
     ap.add_argument("--start", type=int, default=1)
     ap.add_argument("--right-t", type=int, default=1)
+    ap.add_argument("--upfront", action="store_true",
+                    help="reconstruct all H1 entries upfront (mimics production)")
     args = ap.parse_args()
-    sandbox = ROOT / "bench_instrumented_tmp"
+    suffix = "_upfront" if args.upfront else ""
+    sandbox = ROOT / f"bench_instrumented_tmp{suffix}"
     sandbox.mkdir(exist_ok=True)
     log = sandbox / "bench.log"
     if log.exists(): log.unlink()
-    emit = EMIT_PATH
+    emit = sandbox / "emit.g"
     if emit.exists(): emit.unlink()
     g = (GAP_DRIVER
          .replace("__LOG__", str(log).replace("\\", "/"))
@@ -282,7 +299,8 @@ def main():
          .replace("__CACHE__", str(CACHE_PATH).replace("\\", "/"))
          .replace("__START__", str(args.start))
          .replace("__RIGHT_T__", str(args.right_t))
-         .replace("__NPAIRS__", str(args.npairs)))
+         .replace("__NPAIRS__", str(args.npairs))
+         .replace("__UPFRONT__", "1" if args.upfront else "0"))
     g_path = sandbox / "bench.g"
     g_path.write_text(g, encoding="utf-8")
     bash_exe = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
