@@ -1,0 +1,39 @@
+import subprocess
+import os
+import time
+
+gap_runtime = r"C:\Program Files\GAP-4.15.1\runtime"
+bash_exe = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
+script_path = "/cygdrive/c/Users/jeffr/Downloads/Lifting/temp_verify_run.g"
+
+env = os.environ.copy()
+env['PATH'] = r"C:\Program Files\GAP-4.15.1\runtime\bin;" + env.get('PATH', '')
+env['CYGWIN'] = 'nodosfilewarning'
+
+print(f"Starting quick test at {time.strftime('%H:%M:%S')}")
+process = subprocess.Popen(
+    [bash_exe, "--login", "-c",
+     f'cd "/cygdrive/c/Program Files/GAP-4.15.1/runtime/opt/gap-4.15.1" && ./gap.exe -q "{script_path}"'],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    env=env,
+    cwd=gap_runtime
+)
+
+try:
+    stdout, stderr = process.communicate(timeout=1200)
+    print(f"Finished at {time.strftime('%H:%M:%S')}")
+except subprocess.TimeoutExpired:
+    process.kill()
+    print("TIMEOUT after 20 minutes")
+
+try:
+    with open(r"C:\Users\jeffr\Downloads\Lifting\gap_verify.log", "r") as f:
+        print(f.read())
+except FileNotFoundError:
+    print("Log not found")
+    if stdout:
+        print(stdout[:3000])
+    if stderr:
+        print("STDERR:", stderr[:3000])

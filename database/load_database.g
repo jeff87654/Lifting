@@ -25,6 +25,7 @@ DATABASE_LOAD_STATS := rec(
     transitive_subgroups := 0,
     fpf_subdirects := 0,
     ea_subdirects := 0,
+    tf_lattice := 0,
     load_time := 0
 );
 
@@ -48,6 +49,12 @@ fi;
 # This will be merged into ELEMENTARY_ABELIAN_SUBDIRECTS at load time
 if not IsBound(EA_SUBDIRECTS_DATA) then
     EA_SUBDIRECTS_DATA := rec();
+fi;
+
+# TF_SUBGROUP_LATTICE_DATA.(iso_key) = rec(canonical_gens, subgroups)
+# Each canonical_gens entry and each subgroup generator is a permutation list.
+if not IsBound(TF_SUBGROUP_LATTICE_DATA) then
+    TF_SUBGROUP_LATTICE_DATA := rec();
 fi;
 
 ###############################################################################
@@ -223,6 +230,167 @@ LoadEASubdirects := function()
 end;
 
 ###############################################################################
+# Load TF Subgroup Lattice Cache
+###############################################################################
+
+LoadTFLattice := function()
+    local filename, key, count, entry, canonical_gens_perms, subgroup_perms,
+          lst, G_canonical;
+
+    filename := Concatenation(DATABASE_PATH, "tf_groups/tf_subgroup_lattice.g");
+
+    if not IsReadableFile(filename) then
+        return false;
+    fi;
+
+    Read(filename);
+
+    if not IsBound(TF_SUBGROUP_LATTICE) then
+        TF_SUBGROUP_LATTICE := rec();
+    fi;
+
+    if not IsBound(TF_SUBGROUP_LATTICE_DATA) then
+        return false;
+    fi;
+
+    count := 0;
+    for key in RecNames(TF_SUBGROUP_LATTICE_DATA) do
+        if IsBound(TF_SUBGROUP_LATTICE.(key)) then
+            continue;
+        fi;
+
+        entry := TF_SUBGROUP_LATTICE_DATA.(key);
+
+        canonical_gens_perms := [];
+        for lst in entry.canonical_gens do
+            if Length(lst) > 0 then
+                Add(canonical_gens_perms, PermFromList(lst));
+            fi;
+        od;
+
+        if Length(canonical_gens_perms) = 0 then
+            G_canonical := Group(());
+        else
+            G_canonical := Group(canonical_gens_perms);
+        fi;
+
+        subgroup_perms := List(entry.subgroups, genLists -> GroupFromGenLists(genLists));
+
+        TF_SUBGROUP_LATTICE.(key) := rec(
+            canonical_group := G_canonical,
+            canonical_gens := canonical_gens_perms,
+            subgroups := subgroup_perms
+        );
+
+        count := count + 1;
+    od;
+
+    DATABASE_LOAD_STATS.tf_lattice := count;
+    if count > 0 then
+        Print("  Loaded ", count, " TF subgroup lattice entries\n");
+    fi;
+
+    return count > 0;
+end;
+
+###############################################################################
+# Save TF Subgroup Lattice Cache
+###############################################################################
+
+# Helper: serialize a perm group's generators as ListPerm-style lists.
+# Returns [] for trivial group (no generators to emit). Caller must guard
+# against non-perm groups before calling.
+_SerializeTFGroupGens := function(G)
+    local gens, moved_max, g;
+    gens := [];
+    if not IsPermGroup(G) then
+        return gens;
+    fi;
+    moved_max := LargestMovedPoint(G);
+    if moved_max = 0 then
+        return gens;
+    fi;
+    for g in GeneratorsOfGroup(G) do
+        if g = () then
+            Add(gens, []);
+        else
+            Add(gens, ListPerm(g, moved_max));
+        fi;
+    od;
+    return gens;
+end;
+
+# Persist TF_SUBGROUP_LATTICE to disk. With dirtyOnly=true, only the keys
+# in TF_SUBGROUP_LATTICE_DIRTY_KEYS are merged with the on-disk file.
+SaveTFLattice := function(dirtyOnly)
+    local filename, key, entry, outData, canonicalGenLists, subgroupGenLists,
+          dirty_keys, G, count_written;
+
+    filename := Concatenation(DATABASE_PATH, "tf_groups/tf_subgroup_lattice.g");
+
+    outData := rec();
+
+    if dirtyOnly = true and IsReadableFile(filename) then
+        Read(filename);
+        if IsBound(TF_SUBGROUP_LATTICE_DATA) then
+            for key in RecNames(TF_SUBGROUP_LATTICE_DATA) do
+                outData.(key) := TF_SUBGROUP_LATTICE_DATA.(key);
+            od;
+        fi;
+    fi;
+
+    if dirtyOnly = true and IsBound(TF_SUBGROUP_LATTICE_DIRTY_KEYS) then
+        dirty_keys := RecNames(TF_SUBGROUP_LATTICE_DIRTY_KEYS);
+    else
+        dirty_keys := RecNames(TF_SUBGROUP_LATTICE);
+    fi;
+
+    count_written := 0;
+    for key in dirty_keys do
+        if not IsBound(TF_SUBGROUP_LATTICE.(key)) then
+            continue;
+        fi;
+
+        entry := TF_SUBGROUP_LATTICE.(key);
+
+        canonicalGenLists := [];
+        if IsBound(entry.canonical_group) and IsPermGroup(entry.canonical_group) then
+            canonicalGenLists := _SerializeTFGroupGens(entry.canonical_group);
+        elif IsBound(entry.canonical_gens) then
+            for G in entry.canonical_gens do
+                if G = () then
+                    Add(canonicalGenLists, []);
+                else
+                    Add(canonicalGenLists, ListPerm(G, LargestMovedPoint(G)));
+                fi;
+            od;
+        fi;
+
+        subgroupGenLists := List(entry.subgroups, _SerializeTFGroupGens);
+
+        outData.(key) := rec(
+            canonical_gens := canonicalGenLists,
+            subgroups := subgroupGenLists
+        );
+        count_written := count_written + 1;
+    od;
+
+    PrintTo(filename, "###############################################################################\n");
+    AppendTo(filename, "# tf_subgroup_lattice.g - Precomputed subgroup lattices for TF-groups\n");
+    AppendTo(filename, "# Auto-generated - do not edit manually\n");
+    AppendTo(filename, "###############################################################################\n\n");
+    AppendTo(filename, "TF_SUBGROUP_LATTICE_DATA := ", outData, ";\n");
+
+    Print("Saved TF subgroup lattice to ", filename, "\n");
+    Print("  ", Length(RecNames(outData)), " entries total (",
+          count_written, " new/updated this session)\n");
+
+    if IsBound(TF_SUBGROUP_LATTICE_DIRTY_KEYS) then
+        TF_SUBGROUP_LATTICE_DIRTY_KEYS := rec();
+    fi;
+end;
+
+###############################################################################
 # Master Load Function
 ###############################################################################
 
@@ -260,6 +428,10 @@ LoadDatabaseIfExists := function()
             Print("  Loaded D_4^3 cache: ", Length(D4_CUBE_CACHE), " subdirects\n");
             anyLoaded := true;
         fi;
+    fi;
+
+    if LoadTFLattice() then
+        anyLoaded := true;
     fi;
 
     DATABASE_LOAD_STATS.load_time := Runtime() - startTime;
@@ -445,6 +617,7 @@ PrintDatabaseStats := function()
     Print("Transitive subgroup entries: ", DATABASE_LOAD_STATS.transitive_subgroups, "\n");
     Print("FPF subdirect entries:       ", DATABASE_LOAD_STATS.fpf_subdirects, "\n");
     Print("EA subdirect entries:        ", DATABASE_LOAD_STATS.ea_subdirects, "\n");
+    Print("TF lattice entries:          ", DATABASE_LOAD_STATS.tf_lattice, "\n");
     Print("Load time:                   ", DATABASE_LOAD_STATS.load_time / 1000.0, "s\n");
     Print("\n");
 end;

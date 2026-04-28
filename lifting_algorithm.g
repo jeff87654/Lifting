@@ -57,6 +57,18 @@ USE_H1_COMPLEMENTS := true;
 USE_NONSPLIT_TEST := true;
 USE_FPF_IMPOSSIBILITY := true;
 
+# Holt TF-database lookup. Enumerates complements of M_bar in Q by
+# reducing to (V, V cap M_bar) sub-problems, one per supplement of M_bar_TF
+# in TF. See EnumerateComplementsViaTFDatabase for correctness proof.
+if not IsBound(USE_TF_DATABASE) then
+    USE_TF_DATABASE := true;
+fi;
+
+# Upper bound on |TF(Q)| for cache insertion (Holt's modern database is ~10M).
+if not IsBound(TF_DATABASE_MAX_SIZE) then
+    TF_DATABASE_MAX_SIZE := 10000000;
+fi;
+
 # Timing statistics for H^1 vs fallback comparison
 H1_TIMING_STATS := rec(
     h1_calls := 0,
@@ -65,6 +77,19 @@ H1_TIMING_STATS := rec(
     fallback_time := 0,
     coprime_skips := 0,
     cache_hits := 0
+);
+
+# Tracking for TF-database lookup behavior.
+# t_lookup excludes t_compute (cache-miss ConjugacyClassesSubgroups time) so
+# we can distinguish hot-path overhead from backfill cost.
+TF_LOOKUP_STATS := rec(
+    calls := 0,
+    hits := 0,
+    misses_cached := 0,      # miss but size within bound -> computed + stored
+    misses_oversized := 0,    # |TF(Q)| > TF_DATABASE_MAX_SIZE -> skipped
+    lookup_fails := 0,        # fingerprint found but isomorphism verification failed
+    t_lookup := 0,
+    t_compute := 0
 );
 
 ###############################################################################
@@ -88,8 +113,20 @@ SafeNaturalHomByNSG := function(G, N)
     # Fallback: construct quotient via right coset action.
     # This avoids GAP's FindActionKernel/ChiefSeriesThrough which can crash
     # on large permutation groups (TransitiveGroup(14,54/55/57) etc.).
-    # The resulting representation is on [G:N] points (may be larger than
-    # optimal but is always correct).
+    # The resulting representation is on [G:N] points.
+    #
+    # CRITICAL: skip coset action when [G:N] is large (>10000). GAP's
+    # ActionHomomorphism on a 40K+ point action triggers stabilizer-chain
+    # builds that can hang for hours. Caller (legacy chief-series lift) has
+    # its own layer-by-layer code path that works without the quotient hom
+    # — letting this function return fail early unblocks the pipeline.
+    if Size(G) / Size(N) > 10000 then
+        Print("    [SafeNaturalHomByNSG: standard method failed for |G|=",
+              Size(G), " |N|=", Size(N),
+              ", [G:N]=", Size(G)/Size(N),
+              " too large for coset-action fallback; returning fail]\n");
+        return fail;
+    fi;
     Print("    [SafeNaturalHomByNSG: standard method failed for |G|=",
           Size(G), " |N|=", Size(N),
           ", falling back to coset action]\n");
@@ -106,6 +143,291 @@ SafeNaturalHomByNSG := function(G, N)
     fi;
     Print("    [SafeNaturalHomByNSG: coset action also failed]\n");
     return fail;
+end;
+
+###############################################################################
+# TF-database (Holt): fingerprint, lookup, and store helpers
+#
+# A "TF-group" here is a group G with F_infinity(G) = 1 (trivial solvable
+# radical). For any group Q encountered during lifting, Q/SolvableRadical(Q)
+# is TF. We cache ConjugacyClassesSubgroups of TF-tops, keyed by
+# isomorphism-class fingerprint, so that recurring TF-tops (e.g. A_5 x A_5
+# for S18 [6,6,6] combo 6) avoid per-parent recomputation.
+#
+# Cache lives in TF_SUBGROUP_LATTICE (declared in lifting_method_fast_v2.g).
+# Disk persistence via SaveTFLattice in database/load_database.g.
+###############################################################################
+
+# TFGroupFingerprint(G)
+#
+# Return a string key for G's isomorphism class. For |G| <= 2000 we use
+# IdGroup, which is a unique canonical form via GAP's SmallGroups library.
+# For larger G we use a composite structural fingerprint; equality of
+# fingerprint is *necessary* for isomorphism but not sufficient, so the
+# lookup path must verify via IsomorphismGroups before using a cache hit.
+TFGroupFingerprint := function(G)
+    local sz, id, fp, cs, absizes, cfs, nc, exp, zsize;
+
+    sz := Size(G);
+
+    if sz <= 2000 then
+        id := IdGroup(G);
+        return Concatenation("sm_", String(id[1]), "_", String(id[2]));
+    fi;
+
+    # Composite fingerprint for larger groups. Each invariant is cheap; adding
+    # more of them drops the fingerprint-collision rate (which costs us a
+    # full IsomorphismGroups call on false positives).
+    #   |G|, derived series orders, Abelian invariants of G/[G,G],
+    #   sorted composition series sizes, #conjugacy classes, exponent, |Z(G)|.
+    cs := List(DerivedSeriesOfGroup(G), Size);
+    absizes := AbelianInvariants(G);
+    cfs := SortedList(List(CompositionSeries(G),
+                           function(H) return Size(H); end));
+    nc := NrConjugacyClasses(G);
+    exp := Exponent(G);
+    zsize := Size(Center(G));
+
+    fp := Concatenation(
+        "lg_", String(sz),
+        "_ds=", String(cs),
+        "_ab=", String(absizes),
+        "_cs=", String(cfs),
+        "_nc=", String(nc),
+        "_ex=", String(exp),
+        "_z=", String(zsize));
+    return fp;
+end;
+
+# LookupTFSubgroups(G)
+#
+# Return a list of subgroup class reps of G, each embedded into G's parent
+# permutation group, or fail on miss.
+#
+# On success, Size(G) need not equal Size(cached_G) - we translate via
+# IsomorphismGroups(cached_G, G) and apply the resulting map to each cached
+# subgroup's generators. If the isomorphism construction fails (collision on
+# the coarse fingerprint), return fail.
+LookupTFSubgroups := function(G)
+    local key, entry, iso, cached_subs, result, H, Hgens, imgs, g, img,
+          t0, stats_field, disable_iso;
+
+    TF_LOOKUP_STATS.calls := TF_LOOKUP_STATS.calls + 1;
+    t0 := Runtime();
+
+    disable_iso := IsBound(HOLT_DISABLE_ISO_TRANSPORT) and HOLT_DISABLE_ISO_TRANSPORT;
+
+    if not IsBound(TF_SUBGROUP_LATTICE) then
+        TF_LOOKUP_STATS.t_lookup := TF_LOOKUP_STATS.t_lookup + (Runtime() - t0);
+        return fail;
+    fi;
+
+    key := TFGroupFingerprint(G);
+
+    if not IsBound(TF_SUBGROUP_LATTICE.(key)) then
+        TF_LOOKUP_STATS.t_lookup := TF_LOOKUP_STATS.t_lookup + (Runtime() - t0);
+        return fail;
+    fi;
+
+    entry := TF_SUBGROUP_LATTICE.(key);
+
+    # Exact-perm-rep fast path: if the cached canonical_gens match G's gens
+    # literally, the cached subgroups already live in G's ambient perm rep
+    # and no iso transport is needed. Safe under HOLT_DISABLE_ISO_TRANSPORT.
+    if IsBound(entry.canonical_gens) and
+       GeneratorsOfGroup(G) = entry.canonical_gens then
+        TF_LOOKUP_STATS.hits := TF_LOOKUP_STATS.hits + 1;
+        TF_LOOKUP_STATS.t_lookup := TF_LOOKUP_STATS.t_lookup + (Runtime() - t0);
+        return ShallowCopy(entry.subgroups);
+    fi;
+
+    # Cross-perm-rep would require iso transport. See memory/iso_transport_bug.md
+    # — Image(iso, H) traced to an S_16 off-by-1 regression. Gated by flag.
+    if disable_iso then
+        TF_LOOKUP_STATS.t_lookup := TF_LOOKUP_STATS.t_lookup + (Runtime() - t0);
+        return fail;
+    fi;
+
+    # Verify iso-class match for non-SmallGroups keys.
+    # For "sm_..." keys, IdGroup is canonical, so sizes/structure matches.
+    # But the PERM REP of the cached group and G may differ - we still need
+    # an isomorphism to translate subgroups.
+    iso := IsomorphismGroups(entry.canonical_group, G);
+    if iso = fail then
+        TF_LOOKUP_STATS.lookup_fails := TF_LOOKUP_STATS.lookup_fails + 1;
+        TF_LOOKUP_STATS.t_lookup := TF_LOOKUP_STATS.t_lookup + (Runtime() - t0);
+        return fail;
+    fi;
+
+    # Translate each cached subgroup via iso. Use Image(iso, H) directly
+    # rather than Subgroup(G, [Image(iso, g) for g in gens(H)]) so GAP can
+    # use its internal subgroup-image machinery and preserve attributes
+    # (Size etc.) without re-deriving them from scratch.
+    result := [];
+    for H in entry.subgroups do
+        if IsTrivial(H) then
+            Add(result, TrivialSubgroup(G));
+        else
+            Add(result, Image(iso, H));
+        fi;
+    od;
+
+    TF_LOOKUP_STATS.hits := TF_LOOKUP_STATS.hits + 1;
+    TF_LOOKUP_STATS.t_lookup := TF_LOOKUP_STATS.t_lookup + (Runtime() - t0);
+    return result;
+end;
+
+# StoreTFSubgroups(G, subgroups)
+#
+# Record a cache entry for G. subgroups must be a list of subgroups of G
+# (one representative per conjugacy class). Marks the key dirty so
+# SaveTFLattice persists it.
+#
+# No-op if |G| > TF_DATABASE_MAX_SIZE.
+StoreTFSubgroups := function(G, subgroups)
+    local key;
+
+    if Size(G) > TF_DATABASE_MAX_SIZE then
+        return;
+    fi;
+
+    if not IsBound(TF_SUBGROUP_LATTICE) then
+        TF_SUBGROUP_LATTICE := rec();
+    fi;
+    if not IsBound(TF_SUBGROUP_LATTICE_DIRTY_KEYS) then
+        TF_SUBGROUP_LATTICE_DIRTY_KEYS := rec();
+    fi;
+
+    key := TFGroupFingerprint(G);
+
+    if not IsBound(TF_SUBGROUP_LATTICE.(key)) then
+        TF_SUBGROUP_LATTICE.(key) := rec(
+            canonical_group := G,
+            canonical_gens := GeneratorsOfGroup(G),
+            subgroups := subgroups
+        );
+        TF_SUBGROUP_LATTICE_DIRTY_KEYS.(key) := true;
+    fi;
+end;
+
+# ComputeAndCacheTFSubgroups(G)
+#
+# For a TF-group G with |G| <= TF_DATABASE_MAX_SIZE, compute
+# ConjugacyClassesSubgroups(G), cache the result, and return the subgroup list.
+# Returns fail if G is too large or the computation failed.
+#
+# The caller is responsible for ensuring G IS trivial-Fitting. We do not
+# re-verify here because the check (SolvableRadical trivial) was already
+# done by the caller as part of deriving G = Q / F_oo(Q).
+ComputeAndCacheTFSubgroups := function(G)
+    local t0, result, subgroups;
+
+    if Size(G) > TF_DATABASE_MAX_SIZE then
+        TF_LOOKUP_STATS.misses_oversized := TF_LOOKUP_STATS.misses_oversized + 1;
+        return fail;
+    fi;
+
+    t0 := Runtime();
+    BreakOnError := false;
+    result := CALL_WITH_CATCH(
+        function() return List(ConjugacyClassesSubgroups(G), Representative); end,
+        []);
+    BreakOnError := true;
+    TF_LOOKUP_STATS.t_compute := TF_LOOKUP_STATS.t_compute + (Runtime() - t0);
+
+    if result[1] <> true then
+        return fail;
+    fi;
+
+    subgroups := result[2];
+    StoreTFSubgroups(G, subgroups);
+    TF_LOOKUP_STATS.misses_cached := TF_LOOKUP_STATS.misses_cached + 1;
+    return subgroups;
+end;
+
+# EnumerateComplementsViaTFDatabase(Q, M_bar)
+#
+# Holt TF-top approach. PRECONDITION: M_bar is non-abelian (our hot path),
+# which guarantees M_bar is characteristically simple (as a quotient of a
+# non-abelian chief factor). This in turn forces M_bar cap R = 1 where
+# R = SolvableRadical(Q), because M_bar cap R is a solvable normal subgroup
+# of the characteristically simple M_bar.
+#
+# The reduction: complements of M_bar in Q biject with complements of
+# M_bar_TF = phi(M_bar) in TF = Q/R, where phi: Q -> TF is the quotient.
+# Proof sketch: for a subgroup H <= Q with |H| = [Q:M_bar] and H cap M_bar = 1,
+# the image U = phi(H) satisfies |U| = |TF|/|M_bar_TF| and U cap M_bar_TF = 1
+# (since M_bar restricted to R is trivial). Conversely, given any U <= TF
+# complementing M_bar_TF, the preimage H = phi^-1(U) satisfies |H| = |U|*|R|
+# = [Q:M_bar] and H cap M_bar = phi^-1_M_bar(U cap M_bar_TF) = phi^-1_M_bar(1)
+# = M_bar cap R = 1. So preimage(U) is a complement of M_bar in Q.
+#
+# Consequence: we only need the SUBGROUP LATTICE OF TF (the TF-top), which
+# is typically much smaller than Q (for non-solvable chief factors buried
+# inside a solvable extension). Cache only TF's lattice; the "lift through
+# abelian chief series of R" step reduces to a single PreImages call.
+#
+# Returns a list of complement class reps, or fail if:
+#   - Size(R) = 1 (Q is already TF; caller should use its existing helpers)
+#   - M_bar cap R != 1 (precondition violated; caller should fall through)
+#   - TF's lattice is too large to cache or its computation failed
+EnumerateComplementsViaTFDatabase := function(Q, M_bar)
+    local R, phi, TF, M_bar_TF, TF_subs, idx_TF, result, U;
+
+    R := SolvableRadical(Q);
+
+    if Size(R) = 1 then
+        # Q is TF; no reduction possible. Fall through to existing helpers
+        # (NSCR/HomBased/etc. already handle this case).
+        return fail;
+    fi;
+
+    # Build the quotient phi: Q -> TF = Q/R
+    phi := SafeNaturalHomByNSG(Q, R);
+    if phi = fail then
+        return fail;
+    fi;
+    TF := ImagesSource(phi);
+    M_bar_TF := Image(phi, M_bar);
+
+    # Sanity: for non-abelian M_bar, expect M_bar cap R = 1 (i.e.,
+    # |M_bar_TF| = |M_bar|). If not, precondition violated.
+    if Size(M_bar_TF) <> Size(M_bar) then
+        return fail;
+    fi;
+
+    idx_TF := Size(TF) / Size(M_bar_TF);
+
+    # Look up or compute TF's subgroup lattice (TF is usually much smaller
+    # than Q, so this cache is cheap both to compute on miss and to hit).
+    TF_subs := LookupTFSubgroups(TF);
+    if TF_subs = fail then
+        TF_subs := ComputeAndCacheTFSubgroups(TF);
+        if TF_subs = fail then
+            return fail;
+        fi;
+    fi;
+
+    # Holt TF-top reduction (simple variant): complements H of M_bar in Q
+    # with phi(H) a complement of M_bar_TF in TF correspond exactly to
+    # H = preimage(U) for U a complement of M_bar_TF in TF (and we showed
+    # H cap M_bar = 1, |H| = idx, HM_bar = Q under |M_bar| = |M_bar_TF|).
+    #
+    # This variant CAN miss "proper supplement" complements (H with phi(H)
+    # a strict supplement of M_bar_TF), but those are deduped together
+    # with the proper-complement ones at the cross-combo level by
+    # incrementalDedup under the partition normalizer N. Verified on
+    # S_15 (passes OEIS) and S_16 [6,5,5] (gives the correct 1276
+    # matching the verified S_17 [6,5,5,1] reference).
+    result := [];
+    for U in TF_subs do
+        if Size(U) = idx_TF
+           and Size(Intersection(U, M_bar_TF)) = 1 then
+            Add(result, PreImages(phi, U));
+        fi;
+    od;
+
+    return result;
 end;
 
 ###############################################################################
@@ -599,12 +921,47 @@ end;
 ###############################################################################
 
 if not IsBound(USE_GENERAL_AUT_HOM) then
-    USE_GENERAL_AUT_HOM := true;
+    # DISABLED: the current parametrization (phi_C in Hom(C, M_bar) plus
+    # m-iteration over M_bar) only systematically covers complements K
+    # with phi(K) = A_i (an exact complement of Inn(M_bar) in A). It
+    # does not enumerate complements with phi(K) a strict supplement of
+    # Inn(M_bar), which exist when |A/Inn| > 1. W506's combo 6
+    # ([5,5,2,2,2,2]/[2,1]^4_[5,5]^2) undercount of 7 classes vs prebug
+    # was traced to this. Keeping the flag so the path can be re-enabled
+    # once a supplement-aware parametrization is implemented.
+    USE_GENERAL_AUT_HOM := false;
 fi;
 
 if not IsBound(GENERAL_AUT_HOM_VERBOSE) then
     GENERAL_AUT_HOM_VERBOSE := false;
 fi;
+
+# Diagnostic: when true, after each successful GAH call, also run NSCR on the
+# same (Q, M_bar) and record any class-count mismatch.  Skips NSCR when |Q|
+# exceeds DIAG_GAH_MAX_Q_SIZE to keep the diagnostic tractable.  Divergent
+# cases land in DIAG_GAH_DIFFERS (a list of records with Q/M_bar generators).
+if not IsBound(DIAG_GAH_VS_NSCR) then
+    DIAG_GAH_VS_NSCR := false;
+fi;
+if not IsBound(DIAG_GAH_MAX_Q_SIZE) then
+    DIAG_GAH_MAX_Q_SIZE := 50000;
+fi;
+if not IsBound(DIAG_GAH_DIFFERS) then
+    DIAG_GAH_DIFFERS := [];
+fi;
+# When set, each divergent (Q, M_bar) is appended immediately to this file
+# (so we have data even if the run is interrupted).
+if not IsBound(DIAG_GAH_DUMP_FILE) then
+    DIAG_GAH_DUMP_FILE := fail;
+fi;
+# When set (string path), dump EVERY GAH/HBC call to this file (regardless of
+# NSCR comparison) so we can later harvest large-Q cases for offline analysis.
+if not IsBound(DIAG_GAH_DUMP_ALL_FILE) then
+    DIAG_GAH_DUMP_ALL_FILE := fail;
+fi;
+# GAH writes its internal counts here at the end of each call (for debugging
+# state-sensitivity bugs).
+_GAH_LAST_INTERNALS := rec();
 
 GeneralAutHomComplements := function(Q, M_bar, C)
     local idx, gensT, autT, isoPerm, autPerm, innGens, innT,
@@ -613,7 +970,8 @@ GeneralAutHomComplements := function(Q, M_bar, C)
           c_a_map, ell, m_trial, a_lift, ok, c_idx, i, K_gens, K,
           _findRightOrderLift, result, byInv, key, bucket,
           candidate, is_dup, ai_gen, bucket_group, _dbg_t, _dbg,
-          validTaus, stab_elts, orbitReps, canon, cand, stab_m;
+          validTaus, stab_elts, orbitReps, canon, cand, stab_m,
+          canon_seen;
 
     idx := Size(Q) / Size(M_bar);
     if idx = 1 then return [TrivialSubgroup(Q)]; fi;
@@ -772,10 +1130,18 @@ GeneralAutHomComplements := function(Q, M_bar, C)
                 fi;
 
                 # Orbit dedup: for each tau, compute the minimum element
-                # reachable under both actions.  Two iterations suffice
-                # for |A_i| = 2 because combining an A_i-conjugation with
-                # a Stab action is another Stab-conjugate of an A_i-shift.
-                orbitReps := Set([]);
+                # reachable under both actions to use as a dedup key.
+                # CRITICAL: build K from the original m_trial (which is
+                # known to satisfy equivariance), NOT from canon.  The
+                # A_i orbit on m can map m_valid to a_gen(m_valid) which
+                # does NOT satisfy equivariance whenever Image(hom)
+                # generates a subgroup centralized only by Z(M_bar)=1.
+                # Building K from such a "canon" gave Group(K_gens) with
+                # Size = |M_bar|*idx (M_bar absorbed) — silently dropped
+                # by the validity check, losing the orbit's K entirely.
+                # Using m_trial preserves the K, and canon-tracking still
+                # dedups orbit-equivalent K's.
+                canon_seen := Set([]);
                 for m_trial in validTaus do
                     canon := m_trial;
                     # Stab-action alone (tau -> m_0^-1 tau a(m_0))
@@ -793,11 +1159,9 @@ GeneralAutHomComplements := function(Q, M_bar, C)
                               * (a_lift * stab_m * a_lift^-1)) * a_lift;
                         if cand < canon then canon := cand; fi;
                     od;
-                    AddSet(orbitReps, canon);
-                od;
-
-                # Build one K per orbit rep.
-                for m_trial in orbitReps do
+                    if canon in canon_seen then continue; fi;
+                    AddSet(canon_seen, canon);
+                    # Build K from m_trial (validated), not canon.
                     ell := m_trial * a_lift;
                     K_gens := Concatenation(
                         List([1..Length(gensC)],
@@ -854,6 +1218,17 @@ GeneralAutHomComplements := function(Q, M_bar, C)
               " classes in ", Runtime()-_dbg_t, "ms\n");
     fi;
 
+    _GAH_LAST_INTERNALS := rec(
+        Q_size := Size(Q),
+        M_bar_size := Size(M_bar),
+        C_size := Size(C),
+        complsInA_count := Length(complsInA),
+        homClasses_count := Length(homClasses),
+        raw_count := Length(result_raw),
+        dedup_count := Length(result),
+        gensC_count := Length(gensC),
+        gensC := gensC);
+
     return result;
 end;
 
@@ -868,7 +1243,7 @@ end;
 NormalSubgroupsBetween := function(S, M, N)
     local hom, MmodN, result, V, L,
           p, d, pcgs, mats, gen, mat, i, img, exps, module,
-          compositionBases, submodBasis, submodVecs, submodGens,
+          submoduleBases, submodBasis, submodVecs, submodGens,
           vec, elm, subGrp;
 
     # If M = N, only M itself works
@@ -951,20 +1326,18 @@ NormalSubgroupsBetween := function(S, M, N)
         return [M, N];
     fi;
 
-    # Module is reducible: use MeatAxe to find S-invariant submodules
-    # instead of enumerating AllSubgroups (which is exponential).
-    # MTX.BasesCompositionSeries gives a chain of submodules in O(d^3) time.
+    # Module is reducible: enumerate ALL S-invariant submodules of M/N.
+    # Holt's lift step needs every S-invariant L/N between N and M, not just
+    # one composition-series chain. MTX.BasesSubmodules returns one basis for
+    # each invariant submodule, which we lift back to subgroups of M.
     result := [M, N];
 
-    # Use MTX.BasesCompositionSeries to get a full composition series
-    # of the module. This gives a chain of submodules:
-    # {0} = V_0 < V_1 < ... < V_k = V
-    # Each V_i corresponds to an S-normal subgroup between N and M.
-    compositionBases := MTX.BasesCompositionSeries(module);
+    # BasesSubmodules includes the trivial and full submodules.
+    submoduleBases := MTX.BasesSubmodules(module);
 
-    # compositionBases is a list of bases, from trivial to full module
-    # Each basis represents a submodule; lift each back to a normal subgroup
-    for submodBasis in compositionBases do
+    # Each basis represents an S-invariant submodule; lift each back to a
+    # normal subgroup between N and M.
+    for submodBasis in submoduleBases do
         if Length(submodBasis) = 0 then
             # Trivial submodule = N (already in result)
             continue;
@@ -1478,7 +1851,8 @@ LiftThroughLayer := function(P, M, N, subgroups_containing_M, shifted_factors, o
                     fi;
                     complements := CallFuncList(function()
                         local idx, compReps, g, C, c, transversal, t, gens,
-                              subC, result, _t0, _autResult, _ghResult;
+                              subC, result, _t0, _autResult, _ghResult,
+                              _t1, _diagNscr, _tfResult;
                         idx := Size(Q) / Size(M_bar);
 
                         # For index 2 (most common: S_n/A_n):
@@ -1511,6 +1885,30 @@ LiftThroughLayer := function(P, M, N, subgroups_containing_M, shifted_factors, o
                             od;
                             # Extension might not split - no complement exists
                             return [];
+                        fi;
+
+                        # TF-DATABASE LOOKUP (Holt): if Q's subgroup lattice is
+                        # cached (or within size bound), derive complements by
+                        # filtering subgroups for |H|=idx and H cap M_bar = 1.
+                        # Isomorphic Q across parents all reuse one cache entry,
+                        # giving the 10-100x speedup Holt reports.
+                        # On fail, fall through to existing helpers below.
+                        if USE_TF_DATABASE then
+                            _t0 := Runtime();
+                            _tfResult := EnumerateComplementsViaTFDatabase(Q, M_bar);
+                            if _tfResult <> fail then
+                                if layerSize > 60 then
+                                    Print("          TFDB: ", Length(_tfResult),
+                                          " complements (", Runtime()-_t0, "ms, ",
+                                          "hits=", TF_LOOKUP_STATS.hits,
+                                          "/calls=", TF_LOOKUP_STATS.calls, ")\n");
+                                fi;
+                                return _tfResult;
+                            fi;
+                            if layerSize > 60 then
+                                Print("          TFDB: miss/oversized (",
+                                      Runtime()-_t0, "ms, |Q|=", Size(Q), ")\n");
+                            fi;
                         fi;
 
                         # For index > 2 with non-abelian simple M_bar:
@@ -1581,6 +1979,59 @@ LiftThroughLayer := function(P, M, N, subgroups_containing_M, shifted_factors, o
                                     Print("          -> Hom-based: ", Length(result),
                                           " complements (", Runtime()-_t0, "ms)\n");
                                 fi;
+                                if DIAG_GAH_DUMP_ALL_FILE <> fail then
+                                    AppendTo(DIAG_GAH_DUMP_ALL_FILE,
+                                        "Add(GAH_ALL_CALLS, rec(",
+                                        "source := \"HBC\", ",
+                                        "Q_size := ", Size(Q), ", ",
+                                        "M_bar_size := ", Size(M_bar), ", ",
+                                        "C_size := ", Size(C), ", ",
+                                        "idx := ", Size(Q) / Size(M_bar), ", ",
+                                        "gah_count := ", Length(result), ", ",
+                                        "Q_gens := ", GeneratorsOfGroup(Q), ", ",
+                                        "M_bar_gens := ", GeneratorsOfGroup(M_bar),
+                                        "));\n");
+                                fi;
+                                if DIAG_GAH_VS_NSCR
+                                   and Size(Q) <= DIAG_GAH_MAX_Q_SIZE then
+                                    _t1 := Runtime();
+                                    _diagNscr := NonSolvableComplementClassReps(Q, M_bar);
+                                    if Length(_diagNscr) <> Length(result) then
+                                        Add(DIAG_GAH_DIFFERS, rec(
+                                            source := "HBC",
+                                            Q_size := Size(Q),
+                                            M_bar_size := Size(M_bar),
+                                            C_size := Size(C),
+                                            idx := Size(Q) / Size(M_bar),
+                                            gah_count := Length(result),
+                                            nscr_count := Length(_diagNscr),
+                                            Q_gens := GeneratorsOfGroup(Q),
+                                            M_bar_gens := GeneratorsOfGroup(M_bar),
+                                            gah_reps := result,
+                                            nscr_reps := _diagNscr));
+                                        Print("          ! HBC-vs-NSCR mismatch: HBC=",
+                                              Length(result), " NSCR=",
+                                              Length(_diagNscr),
+                                              " |Q|=", Size(Q),
+                                              " |M_bar|=", Size(M_bar),
+                                              " |C|=", Size(C),
+                                              " (NSCR ", Runtime()-_t1, "ms)\n");
+                                        if DIAG_GAH_DUMP_FILE <> fail then
+                                            AppendTo(DIAG_GAH_DUMP_FILE,
+                                                "Add(DIAG_GAH_DIFFERS_LOADED, rec(",
+                                                "source := \"HBC\", ",
+                                                "Q_size := ", Size(Q), ", ",
+                                                "M_bar_size := ", Size(M_bar), ", ",
+                                                "C_size := ", Size(C), ", ",
+                                                "idx := ", Size(Q) / Size(M_bar), ", ",
+                                                "gah_count := ", Length(result), ", ",
+                                                "nscr_count := ", Length(_diagNscr), ", ",
+                                                "Q_gens := ", GeneratorsOfGroup(Q), ", ",
+                                                "M_bar_gens := ", GeneratorsOfGroup(M_bar),
+                                                "));\n");
+                                        fi;
+                                    fi;
+                                fi;
                                 return result;
                             fi;
                             if layerSize > 60 then
@@ -1604,6 +2055,69 @@ LiftThroughLayer := function(P, M, N, subgroups_containing_M, shifted_factors, o
                                 if layerSize > 60 then
                                     Print("          GeneralAutHom: ", Length(_ghResult),
                                           " complements (", Runtime()-_t0, "ms)\n");
+                                fi;
+                                if DIAG_GAH_DUMP_ALL_FILE <> fail then
+                                    AppendTo(DIAG_GAH_DUMP_ALL_FILE,
+                                        "Add(GAH_ALL_CALLS, rec(",
+                                        "source := \"GAH\", ",
+                                        "Q_size := ", Size(Q), ", ",
+                                        "M_bar_size := ", Size(M_bar), ", ",
+                                        "C_size := ", Size(C), ", ",
+                                        "idx := ", Size(Q) / Size(M_bar), ", ",
+                                        "gah_count := ", Length(_ghResult), ", ",
+                                        "Q_gens := ", GeneratorsOfGroup(Q), ", ",
+                                        "M_bar_gens := ", GeneratorsOfGroup(M_bar),
+                                        "));\n");
+                                fi;
+                                if DIAG_GAH_VS_NSCR
+                                   and Size(Q) <= DIAG_GAH_MAX_Q_SIZE then
+                                    _t1 := Runtime();
+                                    _diagNscr := NonSolvableComplementClassReps(Q, M_bar);
+                                    if Length(_diagNscr) <> Length(_ghResult) then
+                                        Add(DIAG_GAH_DIFFERS, rec(
+                                            source := "GAH",
+                                            Q_size := Size(Q),
+                                            M_bar_size := Size(M_bar),
+                                            C_size := Size(C),
+                                            idx := Size(Q) / Size(M_bar),
+                                            gah_count := Length(_ghResult),
+                                            nscr_count := Length(_diagNscr),
+                                            Q_gens := GeneratorsOfGroup(Q),
+                                            M_bar_gens := GeneratorsOfGroup(M_bar),
+                                            gah_reps := _ghResult,
+                                            nscr_reps := _diagNscr,
+                                            internals := _GAH_LAST_INTERNALS,
+                                            C_gens_at_diff := GeneratorsOfGroup(C)));
+                                        Print("          ! GAH-vs-NSCR mismatch: GAH=",
+                                              Length(_ghResult), " NSCR=",
+                                              Length(_diagNscr),
+                                              " |Q|=", Size(Q),
+                                              " |M_bar|=", Size(M_bar),
+                                              " |C|=", Size(C),
+                                              " (NSCR ", Runtime()-_t1, "ms)\n");
+                                        if DIAG_GAH_DUMP_FILE <> fail then
+                                            AppendTo(DIAG_GAH_DUMP_FILE,
+                                                "Add(DIAG_GAH_DIFFERS_LOADED, rec(",
+                                                "source := \"GAH\", ",
+                                                "Q_size := ", Size(Q), ", ",
+                                                "M_bar_size := ", Size(M_bar), ", ",
+                                                "C_size := ", Size(C), ", ",
+                                                "idx := ", Size(Q) / Size(M_bar), ", ",
+                                                "gah_count := ", Length(_ghResult), ", ",
+                                                "nscr_count := ", Length(_diagNscr), ", ",
+                                                "homClasses := ",
+                                                  _GAH_LAST_INTERNALS.homClasses_count, ", ",
+                                                "raw_count := ",
+                                                  _GAH_LAST_INTERNALS.raw_count, ", ",
+                                                "dedup_count := ",
+                                                  _GAH_LAST_INTERNALS.dedup_count, ", ",
+                                                "C_gens := ",
+                                                  GeneratorsOfGroup(C), ", ",
+                                                "Q_gens := ", GeneratorsOfGroup(Q), ", ",
+                                                "M_bar_gens := ", GeneratorsOfGroup(M_bar),
+                                                "));\n");
+                                        fi;
+                                    fi;
                                 fi;
                                 return _ghResult;
                             fi;

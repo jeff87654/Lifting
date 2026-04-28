@@ -1,0 +1,12 @@
+LogTo("C:/Users/jeffr/Downloads/Lifting/test_gap_start.log");
+Print("GAP started successfully\n");
+Print("Loading lifting_method_fast_v2.g...\n");
+Read("C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+Print("Loading lift_cache.g...\n");
+Read("C:/Users/jeffr/Downloads/Lifting/database/lift_cache.g");
+Print("All loaded. Testing BuildConjugacyTestGroup...\n");
+N := BuildConjugacyTestGroup(17, [17]);
+Print("|N| = ", Size(N), "\n");
+Print("SUCCESS\n");
+LogTo();
+QUIT;

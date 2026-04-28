@@ -1,0 +1,18 @@
+Print("Starting test...\n");
+SKIP_DATABASE_LOAD := true;
+Read("C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+Print("Code loaded. Reading checkpoint...\n");
+_CKPT_ALL_FPF_GENS := [];
+_CKPT_COMPLETED_KEYS := [];
+_CKPT_TOTAL_CANDIDATES := 0;
+_CKPT_ADDED_COUNT := 0;
+_CKPT_INV_KEYS := fail;
+_CKPT_RICH_INV := false;
+Read("C:/Users/jeffr/Downloads/Lifting/parallel_s17/checkpoints/worker_178/ckpt_17_8_4_3_2.g");
+Print("Checkpoint loaded: ", Length(_CKPT_ALL_FPF_GENS), " groups\n");
+Print("Computing 1 invariant...\n");
+_gens := _CKPT_ALL_FPF_GENS[1];
+_H := Group(_gens);
+_key := InvariantKey(ComputeSubgroupInvariant(_H));
+Print("Key: ", _key, "\n");
+QUIT;

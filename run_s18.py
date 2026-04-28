@@ -5,7 +5,7 @@
 # Incorporates per-combo output natively (not monkey-patched) for full
 # traceability of which classes came from which combination.
 #
-# OEIS A000638(18) is UNKNOWN - this computation produces a new result.
+# OEIS A000638(18) = 7274651 (FPF portion = 7274651 - 1466358 = 5808293).
 #
 # Key features:
 #   - Per-combo output files in parallel_s18/[partition]/ for traceability
@@ -48,7 +48,7 @@ BASH_EXE = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
 CONJUGACY_CACHE = r"C:\Users\jeffr\Downloads\Symmetric Groups\conjugacy_cache"
 N = 18
 INHERITED_FROM_PREV = 1466358    # OEIS A000638(17)
-OEIS_TARGET = None               # UNKNOWN - new computation
+OEIS_TARGET = 7274651            # A000638(18)
 EXPECTED_FPF = None              # Will be determined by computation
 
 # NrTransitiveGroups for degrees 1..18
@@ -460,6 +460,23 @@ Print("Worker {worker_id} starting at ", StringTime(Runtime()), "\\n");
 Print("Processing {len(partitions)} partitions for S_{N} (per-combo output)\\n\\n");
 
 Read("C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+
+# Holt engine: clean_first dispatcher (Holt clean for 3+ factor combos with
+# S_n >=5 factors, legacy fast paths for 2-factor Goursat / small-abelian /
+# D_4^3 — see holt_engine/engine.g:_HoltIsLegacyFastPathCase).
+Read("C:/Users/jeffr/Downloads/Lifting/holt_engine/loader.g");
+USE_HOLT_ENGINE := true;
+HOLT_ENGINE_MODE := "clean_first";
+
+# Iso-transport disabled by default (traced to S_16 off-by-1 regression,
+# see memory/iso_transport_bug.md). Exact-perm-rep cache hits still work.
+HOLT_DISABLE_ISO_TRANSPORT := true;
+
+# Kill switch for HoltDedup: on large dedup sets (~1000+ classes),
+# ExpensiveSubgroupInvariant bucketing is slower than letting legacy
+# incrementalDedup do all the work with RepresentativeAction. See
+# engine.g:HoltDedupUnderG for details.
+HOLT_DISABLE_DEDUP := true;
 
 # Load precomputed caches (S1-S17)
 Read("C:/Users/jeffr/Downloads/Lifting/database/lift_cache.g");
@@ -1643,7 +1660,7 @@ def main():
         print(f"OEIS target:  {OEIS_TARGET} "
               f"(FPF = {OEIS_TARGET - INHERITED_FROM_PREV})")
     else:
-        print(f"OEIS target:  UNKNOWN (new computation)")
+        print(f"OEIS target:  UNKNOWN")
     print(f"Workers:      {args.workers}")
     print(f"Timeout:      {args.timeout}s ({args.timeout/3600:.1f}h) per worker")
     print(f"Output:       {OUTPUT_DIR}")
@@ -1709,7 +1726,7 @@ def main():
         f.write(f"S{N} computation started at "
                 f"{datetime.datetime.now().isoformat()}\n")
         f.write(f"Workers: {num_active}, Timeout: {args.timeout}s\n")
-        f.write(f"OEIS target: UNKNOWN (new computation)\n")
+        f.write(f"OEIS target: {OEIS_TARGET}\n")
         f.write(f"Per-combo output: {OUTPUT_DIR}/[partition]/\n")
         f.write(f"{'='*70}\n")
 

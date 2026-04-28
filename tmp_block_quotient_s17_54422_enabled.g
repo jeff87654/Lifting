@@ -1,0 +1,42 @@
+
+LogTo("C:/Users/jeffr/Downloads/Lifting/tmp_block_quotient_s17_54422_enabled.log");
+Read("C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+Read("C:/Users/jeffr/Downloads/Lifting/holt_engine/loader.g");
+Read("C:/Users/jeffr/Downloads/Lifting/database/lift_cache.g");
+USE_HOLT_ENGINE := true;
+HOLT_ENGINE_MODE := "clean";
+CHECKPOINT_DIR := "";
+COMBO_OUTPUT_DIR := "";
+HOLT_DISABLE_BLOCK_QUOTIENT_DEDUP := false;
+HOLT_UF_INDEX_BUCKET_MIN := 40;
+_ORIG_HDQ := HoltDedupUnderNormalQuotient;
+HoltDedupUnderNormalQuotient := function(subgroups, G, B)
+  local t0, r, t, outLen;
+  t0 := Runtime();
+  r := _ORIG_HDQ(subgroups, G, B);
+  t := (Runtime() - t0) / 1000.0;
+  if r = fail then outLen := -1; else outLen := Length(r); fi;
+  Print("[quot] in=", Length(subgroups), " |G|=", Size(G), " |B|=", Size(B), " out=", outLen, " time=", t, "s\n");
+  return r;
+end;
+partition := [5,4,4,2,2];
+currentFactors := [TransitiveGroup(5,5), TransitiveGroup(4,3), TransitiveGroup(4,3), TransitiveGroup(2,1), TransitiveGroup(2,1)];
+shifted := [];; offs := [];; off := 0;;
+for k in [1..Length(currentFactors)] do
+  Add(offs, off);
+  Add(shifted, ShiftGroup(currentFactors[k], off));
+  off := off + NrMovedPoints(currentFactors[k]);
+od;
+P := GroupByGenerators(Concatenation(List(shifted, GeneratorsOfGroup)));
+SetSize(P, Product(List(shifted, Size)));
+Nfull := BuildConjugacyTestGroup(17, partition);
+CURRENT_BLOCK_RANGES := [[1,5],[6,9],[10,13],[14,15],[16,17]];
+Print("RUN enabled [5,4,4,2,2] combo [5,5],[4,3],[4,3],C2,C2 |P|=", Size(P), " |Nfull|=", Size(Nfull), "\n");
+if IsBound(ClearH1Cache) then ClearH1Cache(); fi;
+if IsBound(HOLT_TF_CACHE) then HOLT_TF_CACHE := rec(); fi;
+t0 := Runtime();
+r := HoltFPFSubgroupClassesOfProduct(P, shifted, offs, Nfull);
+t := (Runtime() - t0) / 1000.0;
+Print("enabled count=", Length(r), " time=", t, "s\n");
+LogTo();
+QUIT;

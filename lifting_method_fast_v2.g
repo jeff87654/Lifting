@@ -20,6 +20,23 @@ Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g");
 # computation on H^1 to dramatically reduce complement enumeration time.
 if IsReadableFile("C:/Users/jeffr/Downloads/Lifting/h1_action.g") then
     Read("C:/Users/jeffr/Downloads/Lifting/h1_action.g");
+    if IsBound(_COHOMOLOGY_LOADED) then
+        _COHOMOLOGY_LOADED := true;
+    fi;
+    if IsBound(_H1_ORBITAL_LOADED) then
+        _H1_ORBITAL_LOADED := true;
+    fi;
+fi;
+
+# Holt engine dispatcher (Phase 4).
+# Default implementation: call FindFPFClassesByLifting directly.
+# holt_engine/loader.g (if loaded) overrides _HoltDispatchLift to check
+# the USE_HOLT_ENGINE flag and route through HoltSubgroupClassesOfProduct.
+if not IsBound(USE_HOLT_ENGINE) then USE_HOLT_ENGINE := false; fi;
+if not IsBound(_HoltDispatchLift) then
+    _HoltDispatchLift := function(arg)
+        return CallFuncList(FindFPFClassesByLifting, arg);
+    end;
 fi;
 
 # Safety check: refuse to run with a memory limit.
@@ -50,6 +67,16 @@ LIFT_CACHE := rec();
 
 # Cache for FPF subdirect computations, keyed by sorted transitive group IDs
 FPF_SUBDIRECT_CACHE := rec();
+
+# Cache for TF-group (trivial Fitting, F_infinity(G) = 1) subgroup lattices,
+# keyed by iso-class fingerprint. Used to replace per-parent non-abelian
+# complement enumeration at lifting_algorithm.g:1523. See
+# database/tf_groups/tf_subgroup_lattice.g for the on-disk format.
+TF_SUBGROUP_LATTICE := rec();
+
+# Set of keys added to TF_SUBGROUP_LATTICE during this run (not on disk).
+# SaveTFLattice() at run-end persists only these, avoiding a full rewrite.
+TF_SUBGROUP_LATTICE_DIRTY_KEYS := rec();
 
 # Load the precomputed database for persistent caching
 # This must be done AFTER the caches (LIFT_CACHE, FPF_SUBDIRECT_CACHE) are defined
@@ -1540,7 +1567,7 @@ ORDER_HIST_MAX_SIZE := 100000;
 CheapSubgroupInvariantFull := function(H)
     local inv, center, derived, abelianInv, sizeH, moved,
           blockOrbits, blockTIs, k, blockRange, blockPts, orbs, orbLens,
-          derivedSizes, D, nc, orderHist, g, o;
+          derivedSizes, D, nc, orderHist, g, o, _ti, _saved_boe;
 
     sizeH := Size(H);
 
@@ -1612,11 +1639,24 @@ CheapSubgroupInvariantFull := function(H)
             orbs := Orbits(H, blockPts);
             orbLens := SortedList(List(orbs, Length));
             Add(blockOrbits, orbLens);
-            if Length(orbs) = 1 then
-                Add(blockTIs, [blockRange[2] - blockRange[1] + 1,
-                               TransitiveIdentification(Action(H, blockPts))]);
+            # Use a deterministic per-block discriminator that does NOT
+            # depend on stab chains (Action+TransitiveIdentification can
+            # raise NoMethodFound non-deterministically inside ImagesSource,
+            # putting conjugate H values into different invariant buckets
+            # and silently breaking dedup).  We use the action-image order
+            # |H : ker(H -> Sym(blockPts))| computed via OnTuples
+            # stabilizer, which never builds a stab chain on the image.
+            _saved_boe := BreakOnError;
+            BreakOnError := false;
+            _ti := CALL_WITH_CATCH(function()
+                return Size(H) /
+                       Size(Stabilizer(H, blockPts, OnTuples));
+            end, []);
+            BreakOnError := _saved_boe;
+            if _ti[1] then
+                Add(blockTIs, [blockRange[2] - blockRange[1] + 1, _ti[2]]);
             else
-                Add(blockTIs, [blockRange[2] - blockRange[1] + 1, -1]);
+                Add(blockTIs, [blockRange[2] - blockRange[1] + 1, 0]);
             fi;
         od;
         Sort(blockOrbits);
@@ -1714,10 +1754,11 @@ IsConjugateToAnyInBucket := function(N, H, bucket, inv)
     return false;
 end;
 
-# AddIfNotConjugate(N, H, reps, byInvariant, invFunc)
-# Add H to reps if not conjugate to any existing rep
-# Returns true if added, false if duplicate
-AddIfNotConjugate := function(N, H, reps, byInvariant, invFunc)
+# AddIfNotConjugateWithKey(N, H, reps, byInvariant, invFunc)
+# Add H to reps if not conjugate to any existing rep.
+# Returns a record with the computed invariant key so callers that checkpoint
+# keys do not have to recompute the same rich invariant for newly-added groups.
+AddIfNotConjugateWithKey := function(N, H, reps, byInvariant, invFunc)
     local inv, key;
 
     inv := invFunc(H);
@@ -1725,7 +1766,7 @@ AddIfNotConjugate := function(N, H, reps, byInvariant, invFunc)
 
     if IsBound(byInvariant.(key)) then
         if IsConjugateToAnyInBucket(N, H, byInvariant.(key), inv) then
-            return false;
+            return rec(added := false, key := key);
         fi;
     else
         byInvariant.(key) := [];
@@ -1733,7 +1774,14 @@ AddIfNotConjugate := function(N, H, reps, byInvariant, invFunc)
 
     Add(reps, H);
     Add(byInvariant.(key), H);
-    return true;
+    return rec(added := true, key := key);
+end;
+
+# AddIfNotConjugate(N, H, reps, byInvariant, invFunc)
+# Add H to reps if not conjugate to any existing rep
+# Returns true if added, false if duplicate
+AddIfNotConjugate := function(N, H, reps, byInvariant, invFunc)
+    return AddIfNotConjugateWithKey(N, H, reps, byInvariant, invFunc).added;
 end;
 
 ###############################################################################
@@ -2516,7 +2564,7 @@ FindFPFClassesForPartition := function(n, partition)
     # between chunks to keep memory bounded. Saves mid-combo checkpoint
     # after each chunk so dedup progress survives crashes.
     incrementalDedup := function(newResults)
-        local H, before, _dedupIdx, _dedupTotal, _lastDedupProgress, _beforeAdd,
+        local H, before, _dedupIdx, _dedupTotal, _lastDedupProgress, _addResult,
               _chunkStart, _chunkEnd, _i, _lastCkptPos, _inv, _key, _preIdx,
               _lastRACount, _ck, _ckMax, _ckPos;
         # Reset byInvariant for this combo. If we pre-built the index
@@ -2610,11 +2658,12 @@ FindFPFClassesForPartition := function(n, partition)
                                 _dedupIdx, "/", _dedupTotal, "\n");
                     fi;
                 fi;
-                _beforeAdd := Length(all_fpf);
-                if AddIfNotConjugate(currentN, H, all_fpf, byInvariant, invFunc) then
+                _addResult := AddIfNotConjugateWithKey(currentN, H, all_fpf,
+                    byInvariant, invFunc);
+                if _addResult.added then
                     addedCount := addedCount + 1;
                     # Track invariant key for checkpoint fast-reload
-                    Add(allInvKeys, InvariantKey(invFunc(H)));
+                    Add(allInvKeys, _addResult.key);
                 fi;
                 # Null out processed entry so GC can reclaim the group object
                 newResults[_i] := 0;
@@ -2679,26 +2728,24 @@ FindFPFClassesForPartition := function(n, partition)
             cacheKey := ComputeCacheKey(currentFactors);
             comboCount := comboCount + 1;
 
-            # Checkpoint skip: if this combo was already completed, skip it
-            if IsBound(completedKeySet.(cacheKey)) then
-                Print("    >> combo [", cacheKey, "] CHECKPOINT SKIP\n");
-                return;
-            fi;
-
-            # Per-combo output file skip: if the result file already exists
-            # in COMBO_OUTPUT_DIR AND is complete, this combo was completed by
-            # a previous worker even if the checkpoint didn't record it.
-            # Completeness check: header line "# deduped: N" must match the
-            # actual number of generator lines (lines starting with "[").
+            # Skip policy: we trust the checkpoint only when the on-disk combo
+            # file agrees. A past bug previously deleted combo files after
+            # checkpointing; those stale checkpoint entries were causing us to
+            # silently skip combos that were never actually persisted.
+            # So:
+            #   1. If a complete combo file exists on disk -> SKIP (trust disk)
+            #   2. Else if the checkpoint says completed but no complete file
+            #      on disk -> STALE CHECKPOINT, REDO (unmark the checkpoint)
+            #   3. Else -> run normally
+            _comboFileOK := false;
+            _cfActual := 0;
             if COMBO_OUTPUT_DIR <> "" then
                 _comboFilePath := Concatenation(COMBO_OUTPUT_DIR, "/",
                     _CacheKeyToFileName(cacheKey));
                 if IsExistingFile(_comboFilePath) then
-                    _comboFileOK := false;
                     _comboFileLines := StringFile(_comboFilePath);
                     if _comboFileLines <> fail then
                         _cfExpected := -1;
-                        _cfActual := 0;
                         for _cfLine in SplitString(_comboFileLines, "\n") do
                             if Length(_cfLine) >= 12 and
                                _cfLine{[1..11]} = "# deduped: " then
@@ -2707,18 +2754,46 @@ FindFPFClassesForPartition := function(n, partition)
                                 _cfActual := _cfActual + 1;
                             fi;
                         od;
-                        if _cfExpected >= 0 and _cfExpected = _cfActual then
+                        # P itself always projects onto each factor -> FPF count
+                        # is ALWAYS >= 1. Treat "# deduped: 0" as a failed-run
+                        # artifact and recompute.
+                        if _cfExpected >= 1 and _cfExpected = _cfActual then
                             _comboFileOK := true;
                         fi;
                     fi;
-                    if _comboFileOK then
-                        Print("    >> combo [", cacheKey, "] COMBO FILE EXISTS (",
-                              _cfActual, " groups), SKIP\n");
-                        return;
-                    else
-                        Print("    >> combo [", cacheKey, "] COMBO FILE INCOMPLETE, REDO\n");
-                    fi;
                 fi;
+            fi;
+
+            if _comboFileOK then
+                Print("    >> combo [", cacheKey, "] COMBO FILE EXISTS (",
+                      _cfActual, " groups), SKIP\n");
+                # Keep the checkpoint in sync so downstream accounting stays
+                # correct even if it wasn't recorded previously.
+                if not IsBound(completedKeySet.(cacheKey)) then
+                    completedKeySet.(cacheKey) := true;
+                    Add(completedKeyList, cacheKey);
+                fi;
+                return;
+            fi;
+
+            if IsBound(completedKeySet.(cacheKey)) then
+                # Checkpoint marks this combo complete but the result file is
+                # missing or incomplete. This happens when the combo file was
+                # deleted (manual cleanup, buggy-run rollback). Don't trust
+                # the stale checkpoint -- recompute.
+                Print("    >> combo [", cacheKey,
+                      "] STALE CHECKPOINT (no/bad combo file), REDO\n");
+                Unbind(completedKeySet.(cacheKey));
+                # Clear partial-resume state: PARTIAL RESUME assumes the first
+                # actually-run combo IS the prior-run's interrupted combo. That
+                # assumption breaks when the first run-combo is a STALE CHECKPOINT
+                # REDO, which would incorrectly claim ownership of earlier groups
+                # in all_fpf. On REDO the combo's output is purely the new groups
+                # it generates, so fpfBeforeCombo := Length(all_fpf) via the
+                # else-branch below.
+                _ckpt_partial_start := 0;
+                # Note: completedKeyList may still contain the key. Leaving it
+                # is harmless -- it's only used for checkpoint dedup.
             fi;
 
             # Set global combo identifier for heartbeat tracking
@@ -2768,9 +2843,10 @@ FindFPFClassesForPartition := function(n, partition)
 
             if IsBound(FPF_SUBDIRECT_CACHE.(cacheKey)) then
                 # Cache hit - use cached results (need to shift appropriately)
-                cachedResult := FPF_SUBDIRECT_CACHE.(cacheKey);
-                # Note: cached results are for a canonical shifting,
-                # but since we deduplicate under normalizer, this is fine
+                # ShallowCopy: incrementalDedup nulls newResults[_i] := 0
+                # in place to free GC pressure, which would otherwise
+                # corrupt the shared cached list on the next hit.
+                cachedResult := ShallowCopy(FPF_SUBDIRECT_CACHE.(cacheKey));
                 incrementalDedup(cachedResult);
             else
                 # Wrap entire combo computation in error-safe handler.
@@ -2797,6 +2873,9 @@ FindFPFClassesForPartition := function(n, partition)
 
                     if Length(_shifted) = 1 then
                         FPF_SUBDIRECT_CACHE.(cacheKey) := [_shifted[1]];
+                        # Pass a fresh list to incrementalDedup so its in-place
+                        # mutation (newResults[_i] := 0 for GC) doesn't corrupt
+                        # the cache. See note above the other store sites.
                         incrementalDedup([_shifted[1]]);
                     else
                         _allC2 := true;
@@ -2838,16 +2917,16 @@ FindFPFClassesForPartition := function(n, partition)
                                         fi;
                                     fi;
                                     if Length(_c2Result) <= MAX_CACHE_RESULTS then
-                                        FPF_SUBDIRECT_CACHE.(cacheKey) := _c2Result;
+                                        FPF_SUBDIRECT_CACHE.(cacheKey) := ShallowCopy(_c2Result);
                                     else
                                         Print("    SKIP CACHE: ", Length(_c2Result), " results (> ", MAX_CACHE_RESULTS, ")\n");
                                     fi;
                                     incrementalDedup(_c2Result);
                                 else
                                     _P := Group(Concatenation(List(_shifted, GeneratorsOfGroup)));
-                                    _liftResult := FindFPFClassesByLifting(_P, _shifted, _offs, N);
+                                    _liftResult := _HoltDispatchLift(_P, _shifted, _offs, N);
                                     if Length(_liftResult) <= MAX_CACHE_RESULTS then
-                                        FPF_SUBDIRECT_CACHE.(cacheKey) := _liftResult;
+                                        FPF_SUBDIRECT_CACHE.(cacheKey) := ShallowCopy(_liftResult);
                                     else
                                         Print("    SKIP CACHE: ", Length(_liftResult), " results (> ", MAX_CACHE_RESULTS, ")\n");
                                     fi;
@@ -2855,9 +2934,9 @@ FindFPFClassesForPartition := function(n, partition)
                                 fi;
                             else
                                 _P := Group(Concatenation(List(_shifted, GeneratorsOfGroup)));
-                                _liftResult := FindFPFClassesByLifting(_P, _shifted, _offs, N);
+                                _liftResult := _HoltDispatchLift(_P, _shifted, _offs, N);
                                 if Length(_liftResult) <= MAX_CACHE_RESULTS then
-                                    FPF_SUBDIRECT_CACHE.(cacheKey) := _liftResult;
+                                    FPF_SUBDIRECT_CACHE.(cacheKey) := ShallowCopy(_liftResult);
                                 else
                                     Print("    SKIP CACHE: ", Length(_liftResult), " results (> ", MAX_CACHE_RESULTS, ")\n");
                                 fi;
@@ -2868,16 +2947,16 @@ FindFPFClassesForPartition := function(n, partition)
                                 _c2Result := FindSubdirectsViaGeneralizedC2(currentFactors, _shifted, _offs);
                                 if _c2Result <> fail and Length(_c2Result) > 0 then
                                     if Length(_c2Result) <= MAX_CACHE_RESULTS then
-                                        FPF_SUBDIRECT_CACHE.(cacheKey) := _c2Result;
+                                        FPF_SUBDIRECT_CACHE.(cacheKey) := ShallowCopy(_c2Result);
                                     else
                                         Print("    SKIP CACHE: ", Length(_c2Result), " results (> ", MAX_CACHE_RESULTS, ")\n");
                                     fi;
                                     incrementalDedup(_c2Result);
                                 else
                                     _P := Group(Concatenation(List(_shifted, GeneratorsOfGroup)));
-                                    _liftResult := FindFPFClassesByLifting(_P, _shifted, _offs, N);
+                                    _liftResult := _HoltDispatchLift(_P, _shifted, _offs, N);
                                     if Length(_liftResult) <= MAX_CACHE_RESULTS then
-                                        FPF_SUBDIRECT_CACHE.(cacheKey) := _liftResult;
+                                        FPF_SUBDIRECT_CACHE.(cacheKey) := ShallowCopy(_liftResult);
                                     else
                                         Print("    SKIP CACHE: ", Length(_liftResult), " results (> ", MAX_CACHE_RESULTS, ")\n");
                                     fi;
@@ -2885,9 +2964,9 @@ FindFPFClassesForPartition := function(n, partition)
                                 fi;
                             else
                                 _P := Group(Concatenation(List(_shifted, GeneratorsOfGroup)));
-                                _liftResult := FindFPFClassesByLifting(_P, _shifted, _offs, N);
+                                _liftResult := _HoltDispatchLift(_P, _shifted, _offs, N);
                                 if Length(_liftResult) <= MAX_CACHE_RESULTS then
-                                    FPF_SUBDIRECT_CACHE.(cacheKey) := _liftResult;
+                                    FPF_SUBDIRECT_CACHE.(cacheKey) := ShallowCopy(_liftResult);
                                 else
                                     Print("    SKIP CACHE: ", Length(_liftResult), " results (> ", MAX_CACHE_RESULTS, ")\n");
                                 fi;
@@ -3097,6 +3176,22 @@ CountAllConjugacyClassesFast := function(n)
     # Save FPF cache to database for future runs
     if IsBound(SaveFPFSubdirectCache) then
         SaveFPFSubdirectCache();
+    fi;
+
+    # Save TF-database (Holt) cache - persist only new entries added this run
+    if IsBound(SaveTFLattice) and IsBound(TF_SUBGROUP_LATTICE_DIRTY_KEYS)
+       and Length(RecNames(TF_SUBGROUP_LATTICE_DIRTY_KEYS)) > 0 then
+        SaveTFLattice(true);
+    fi;
+
+    if IsBound(TF_LOOKUP_STATS) and TF_LOOKUP_STATS.calls > 0 then
+        Print("\nTF-database stats: ",
+              TF_LOOKUP_STATS.hits, "/", TF_LOOKUP_STATS.calls, " hits, ",
+              TF_LOOKUP_STATS.misses_cached, " computed+cached, ",
+              TF_LOOKUP_STATS.misses_oversized, " oversized, ",
+              TF_LOOKUP_STATS.lookup_fails, " iso failures, ",
+              "t_lookup=", TF_LOOKUP_STATS.t_lookup, "ms, ",
+              "t_compute=", TF_LOOKUP_STATS.t_compute, "ms\n");
     fi;
 
     return total;

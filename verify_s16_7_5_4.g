@@ -1,0 +1,13 @@
+LogTo("C:/Users/jeffr/Downloads/Lifting/verify_s16_7_5_4.log");
+Read("C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+Read("C:/Users/jeffr/Downloads/Lifting/database/lift_cache.g");
+FPF_SUBDIRECT_CACHE := rec();
+startTime := Runtime();
+result := FindFPFClassesForPartition(16, [7,5,4]);
+elapsed := Runtime() - startTime;
+Print("\n=== RESULT ===\n");
+Print("FPF count for [7,5,4]: ", Length(result), "\n");
+Print("Expected (S16 ground truth): 633\n");
+Print("Elapsed time: ", Int(elapsed/1000), "s\n");
+LogTo();
+QUIT;

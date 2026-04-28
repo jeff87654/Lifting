@@ -1,0 +1,20 @@
+
+LogTo("C:/Users/jeffr/Downloads/Lifting/s17_5552_baseline_1.log");
+Read("C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+FPF_SUBDIRECT_CACHE := rec();
+LIFT_CACHE := rec();
+if IsBound(ClearH1Cache) then ClearH1Cache(); fi;
+part := [5,5,5,2];
+factors := [ TransitiveGroup(5,5), TransitiveGroup(5,5), TransitiveGroup(5,5), TransitiveGroup(2,1) ];
+offs := [];
+shifted := [];
+off := 0;
+for T in factors do Add(offs, off); Add(shifted, ShiftGroup(T, off)); off := off + NrMovedPoints(T); od;
+P := Group(Concatenation(List(shifted, GeneratorsOfGroup)));
+N := BuildConjugacyTestGroup(17, part);
+startMs := Runtime();
+res := FindFPFClassesByLifting(P, shifted, offs, N);
+Print("RESULT_COUNT=", Length(res), "\n");
+Print("ELAPSED_MS=", Runtime()-startMs, "\n");
+LogTo();
+QUIT;

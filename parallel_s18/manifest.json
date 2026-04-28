@@ -14,12 +14,12 @@
         3,
         2
       ],
-      "status": "running",
-      "worker_id": 259,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 722,
+      "fpf_count": 0,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.298802",
-      "completed_at": null
+      "started_at": "2026-04-24T17:26:14.329450",
+      "completed_at": "2026-04-24T17:26:46.691924"
     },
     "6_6_4_2": {
       "partition": [
@@ -28,12 +28,12 @@
         4,
         2
       ],
-      "status": "completed",
-      "worker_id": 206,
-      "fpf_count": 536,
+      "status": "running",
+      "worker_id": 726,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T02:21:40.574835",
-      "completed_at": "2026-04-11T04:17:17.471636"
+      "started_at": "2026-04-24T17:26:15.474797",
+      "completed_at": null
     },
     "10_4_4": {
       "partition": [
@@ -42,10 +42,10 @@
         4
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.562725",
+      "started_at": "2026-04-24T17:26:15.544809",
       "completed_at": null
     },
     "8_8_2": {
@@ -55,10 +55,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.549735",
+      "started_at": "2026-04-24T17:26:16.234074",
       "completed_at": null
     },
     "6_6_6": {
@@ -67,11 +67,11 @@
         6,
         6
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.690356",
+      "started_at": "2026-04-24T17:26:15.032168",
       "completed_at": null
     },
     "8_3_3_2_2": {
@@ -83,10 +83,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.357858",
+      "started_at": "2026-04-24T17:26:15.107685",
       "completed_at": null
     },
     "9_5_4": {
@@ -96,10 +96,10 @@
         4
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.585613",
+      "started_at": "2026-04-24T17:26:15.131694",
       "completed_at": null
     },
     "10_5_3": {
@@ -108,12 +108,12 @@
         5,
         3
       ],
-      "status": "completed",
-      "worker_id": 241,
-      "fpf_count": 1742,
+      "status": "running",
+      "worker_id": 723,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T17:31:21.048109",
-      "completed_at": "2026-04-11T19:01:01.203003"
+      "started_at": "2026-04-24T17:26:14.421978",
+      "completed_at": null
     },
     "9_3_3_3": {
       "partition": [
@@ -123,10 +123,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.335719",
+      "started_at": "2026-04-24T17:26:14.738591",
       "completed_at": null
     },
     "7_5_4_2": {
@@ -137,10 +137,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.349603",
+      "started_at": "2026-04-24T17:26:14.785111",
       "completed_at": null
     },
     "4_4_3_3_2_2": {
@@ -153,10 +153,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.396518",
+      "started_at": "2026-04-24T17:26:16.446133",
       "completed_at": null
     },
     "14_2_2": {
@@ -166,10 +166,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 723,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.405355",
+      "started_at": "2026-04-24T17:26:14.496518",
       "completed_at": null
     },
     "9_3_2_2_2": {
@@ -180,12 +180,12 @@
         2,
         2
       ],
-      "status": "running",
-      "worker_id": 259,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 563,
+      "fpf_count": 121,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.377054",
-      "completed_at": null
+      "started_at": "2026-04-24T09:44:05.173326",
+      "completed_at": "2026-04-24T09:48:36.582390"
     },
     "7_3_3_3_2": {
       "partition": [
@@ -195,12 +195,12 @@
         3,
         2
       ],
-      "status": "failed",
-      "worker_id": 256,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 562,
+      "fpf_count": 214,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.797667",
-      "completed_at": null
+      "started_at": "2026-04-24T09:44:05.129314",
+      "completed_at": "2026-04-24T10:08:41.635595"
     },
     "5_4_3_2_2_2": {
       "partition": [
@@ -212,10 +212,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 262,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.102409",
+      "started_at": "2026-04-24T17:26:15.972968",
       "completed_at": null
     },
     "11_5_2": {
@@ -225,10 +225,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.434408",
+      "started_at": "2026-04-24T17:26:15.375264",
       "completed_at": null
     },
     "11_3_2_2": {
@@ -238,9 +238,9 @@
         2,
         2
       ],
-      "status": "running",
+      "status": "completed",
       "worker_id": 259,
-      "fpf_count": null,
+      "fpf_count": 107,
       "elapsed_s": null,
       "started_at": "2026-04-11T21:00:44.412957",
       "completed_at": null
@@ -255,12 +255,12 @@
         2,
         2
       ],
-      "status": "running",
-      "worker_id": 262,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 529,
+      "fpf_count": 720,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.120440",
-      "completed_at": null
+      "started_at": "2026-04-23T19:50:00.514396",
+      "completed_at": "2026-04-23T21:36:55.512616"
     },
     "3_3_3_3_2_2_2": {
       "partition": [
@@ -272,9 +272,9 @@
         2,
         2
       ],
-      "status": "running",
+      "status": "completed",
       "worker_id": 259,
-      "fpf_count": null,
+      "fpf_count": 1372,
       "elapsed_s": null,
       "started_at": "2026-04-11T21:00:44.424806",
       "completed_at": null
@@ -291,9 +291,9 @@
         2,
         2
       ],
-      "status": "running",
+      "status": "completed",
       "worker_id": 261,
-      "fpf_count": null,
+      "fpf_count": 0,
       "elapsed_s": null,
       "started_at": "2026-04-11T21:46:47.464141",
       "completed_at": null
@@ -303,10 +303,10 @@
         18
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.430831",
+      "started_at": "2026-04-24T17:26:16.629175",
       "completed_at": null
     },
     "4_4_4_4_2": {
@@ -317,9 +317,9 @@
         4,
         2
       ],
-      "status": "failed",
+      "status": "completed",
       "worker_id": 225,
-      "fpf_count": null,
+      "fpf_count": 1163,
       "elapsed_s": null,
       "started_at": "2026-04-11T12:50:53.061139",
       "completed_at": null
@@ -332,11 +332,11 @@
         3
       ],
       "status": "completed",
-      "worker_id": 65,
-      "fpf_count": 34665,
+      "worker_id": 721,
+      "fpf_count": 1955,
       "elapsed_s": null,
-      "started_at": "2026-04-08T05:19:00.719787",
-      "completed_at": "2026-04-08T06:50:32.809408"
+      "started_at": "2026-04-24T15:28:44.484564",
+      "completed_at": null
     },
     "9_4_3_2": {
       "partition": [
@@ -346,11 +346,11 @@
         2
       ],
       "status": "completed",
-      "worker_id": 89,
-      "fpf_count": 686,
+      "worker_id": 719,
+      "fpf_count": 228,
       "elapsed_s": null,
-      "started_at": "2026-04-08T18:39:37.959050",
-      "completed_at": "2026-04-08T19:59:10.201724"
+      "started_at": "2026-04-24T15:28:43.864385",
+      "completed_at": null
     },
     "6_4_3_3_2": {
       "partition": [
@@ -361,10 +361,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.283038",
+      "started_at": "2026-04-24T17:26:14.978161",
       "completed_at": null
     },
     "12_6": {
@@ -372,11 +372,11 @@
         12,
         6
       ],
-      "status": "running",
-      "worker_id": 259,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 721,
+      "fpf_count": 900,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.283038",
+      "started_at": "2026-04-24T15:28:44.606628",
       "completed_at": null
     },
     "8_6_2_2": {
@@ -387,10 +387,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.338394",
+      "started_at": "2026-04-24T17:26:16.250596",
       "completed_at": null
     },
     "6_6_3_3": {
@@ -401,10 +401,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.347944",
+      "started_at": "2026-04-24T17:26:15.610339",
       "completed_at": null
     },
     "5_5_4_4": {
@@ -415,10 +415,10 @@
         4
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.314457",
+      "started_at": "2026-04-24T17:26:14.689576",
       "completed_at": null
     },
     "8_7_3": {
@@ -428,10 +428,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.366403",
+      "started_at": "2026-04-24T17:26:15.653385",
       "completed_at": null
     },
     "10_4_2_2": {
@@ -442,10 +442,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.596676",
+      "started_at": "2026-04-24T17:26:15.169214",
       "completed_at": null
     },
     "7_4_4_3": {
@@ -455,12 +455,12 @@
         4,
         3
       ],
-      "status": "completed",
-      "worker_id": 248,
-      "fpf_count": 277,
+      "status": "running",
+      "worker_id": 723,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T19:01:01.548331",
-      "completed_at": "2026-04-11T20:08:07.015602"
+      "started_at": "2026-04-24T17:26:14.448517",
+      "completed_at": null
     },
     "7_4_3_2_2": {
       "partition": [
@@ -471,10 +471,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.614939",
+      "started_at": "2026-04-24T17:26:15.254736",
       "completed_at": null
     },
     "10_3_3_2": {
@@ -485,10 +485,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.361384",
+      "started_at": "2026-04-24T17:26:14.815103",
       "completed_at": null
     },
     "6_3_3_2_2_2": {
@@ -500,12 +500,12 @@
         2,
         2
       ],
-      "status": "running",
-      "worker_id": 262,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 549,
+      "fpf_count": 950,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.076696",
-      "completed_at": null
+      "started_at": "2026-04-24T07:19:50.992776",
+      "completed_at": "2026-04-24T08:59:41.698822"
     },
     "9_7_2": {
       "partition": [
@@ -513,11 +513,11 @@
         7,
         2
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.782663",
+      "started_at": "2026-04-24T17:26:15.910439",
       "completed_at": null
     },
     "7_5_3_3": {
@@ -528,10 +528,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 262,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.094395",
+      "started_at": "2026-04-24T17:26:16.504652",
       "completed_at": null
     },
     "5_3_3_3_2_2": {
@@ -544,10 +544,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.423938",
+      "started_at": "2026-04-24T17:26:16.540664",
       "completed_at": null
     },
     "11_7": {
@@ -556,10 +556,10 @@
         7
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.401913",
+      "started_at": "2026-04-24T17:26:14.880630",
       "completed_at": null
     },
     "7_3_2_2_2_2": {
@@ -571,12 +571,12 @@
         2,
         2
       ],
-      "status": "running",
-      "worker_id": 263,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 534,
+      "fpf_count": 282,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.663641",
-      "completed_at": null
+      "started_at": "2026-04-23T21:38:20.795863",
+      "completed_at": "2026-04-23T21:40:21.221670"
     },
     "4_3_3_2_2_2_2": {
       "partition": [
@@ -588,9 +588,9 @@
         2,
         2
       ],
-      "status": "failed",
+      "status": "completed",
       "worker_id": 256,
-      "fpf_count": null,
+      "fpf_count": 0,
       "elapsed_s": null,
       "started_at": "2026-04-11T20:43:41.833679",
       "completed_at": null
@@ -604,10 +604,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 723,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.453156",
+      "started_at": "2026-04-24T17:26:14.566048",
       "completed_at": null
     },
     "3_3_2_2_2_2_2_2": {
@@ -621,9 +621,9 @@
         2,
         2
       ],
-      "status": "failed",
+      "status": "completed",
       "worker_id": 256,
-      "fpf_count": null,
+      "fpf_count": 0,
       "elapsed_s": null,
       "started_at": "2026-04-11T20:43:41.873017",
       "completed_at": null
@@ -635,12 +635,12 @@
         4,
         2
       ],
-      "status": "completed",
-      "worker_id": 194,
-      "fpf_count": 0,
+      "status": "running",
+      "worker_id": 723,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-10T17:07:05.063666",
-      "completed_at": "2026-04-10T19:02:43.896952"
+      "started_at": "2026-04-24T17:26:14.378976",
+      "completed_at": null
     },
     "16_2": {
       "partition": [
@@ -648,11 +648,11 @@
         2
       ],
       "status": "completed",
-      "worker_id": 57,
-      "fpf_count": 11532,
+      "worker_id": 720,
+      "fpf_count": 346,
       "elapsed_s": null,
-      "started_at": "2026-04-08T00:49:07.984679",
-      "completed_at": "2026-04-08T02:08:39.820604"
+      "started_at": "2026-04-24T15:28:44.076444",
+      "completed_at": "2026-04-24T17:18:44.475479"
     },
     "4_4_4_3_3": {
       "partition": [
@@ -663,11 +663,11 @@
         3
       ],
       "status": "completed",
-      "worker_id": 72,
-      "fpf_count": 76821,
+      "worker_id": 720,
+      "fpf_count": 242,
       "elapsed_s": null,
-      "started_at": "2026-04-08T12:40:25.890204",
-      "completed_at": null
+      "started_at": "2026-04-24T15:28:44.114971",
+      "completed_at": "2026-04-24T17:18:44.516486"
     },
     "6_4_4_4": {
       "partition": [
@@ -677,10 +677,10 @@
         4
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.271336",
+      "started_at": "2026-04-24T17:26:16.160547",
       "completed_at": null
     },
     "8_4_2_2_2": {
@@ -692,10 +692,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.315596",
+      "started_at": "2026-04-24T17:26:16.183064",
       "completed_at": null
     },
     "8_5_5": {
@@ -705,10 +705,10 @@
         5
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.298802",
+      "started_at": "2026-04-24T17:26:15.573331",
       "completed_at": null
     },
     "9_6_3": {
@@ -717,11 +717,11 @@
         6,
         3
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.704349",
+      "started_at": "2026-04-24T17:26:16.304595",
       "completed_at": null
     },
     "6_5_5_2": {
@@ -731,12 +731,12 @@
         5,
         2
       ],
-      "status": "failed",
-      "worker_id": 237,
-      "fpf_count": 1840,
+      "status": "running",
+      "worker_id": 723,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T16:48:15.854303",
-      "completed_at": "2026-04-11T17:31:20.366727"
+      "started_at": "2026-04-24T17:26:14.393978",
+      "completed_at": null
     },
     "6_4_2_2_2_2": {
       "partition": [
@@ -748,10 +748,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.330162",
+      "started_at": "2026-04-24T17:26:14.712578",
       "completed_at": null
     },
     "9_5_2_2": {
@@ -762,10 +762,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.377944",
+      "started_at": "2026-04-24T17:26:15.705382",
       "completed_at": null
     },
     "6_6_2_2_2": {
@@ -776,11 +776,11 @@
         2,
         2
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.746534",
+      "started_at": "2026-04-24T17:26:16.420121",
       "completed_at": null
     },
     "5_5_4_2_2": {
@@ -791,12 +791,12 @@
         2,
         2
       ],
-      "status": "completed",
-      "worker_id": 250,
-      "fpf_count": 988,
+      "status": "running",
+      "worker_id": 726,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:08:07.498724",
-      "completed_at": "2026-04-11T21:49:17.632867"
+      "started_at": "2026-04-24T17:26:15.782915",
+      "completed_at": null
     },
     "8_2_2_2_2_2": {
       "partition": [
@@ -808,10 +808,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.625144",
+      "started_at": "2026-04-24T17:26:14.849630",
       "completed_at": null
     },
     "9_9": {
@@ -819,11 +819,11 @@
         9,
         9
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.770665",
+      "started_at": "2026-04-24T17:26:15.295737",
       "completed_at": null
     },
     "10_2_2_2_2": {
@@ -834,11 +834,11 @@
         2,
         2
       ],
-      "status": "running",
-      "worker_id": 262,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 525,
+      "fpf_count": 1070,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.085239",
+      "started_at": "2026-04-23T18:25:04.175406",
       "completed_at": null
     },
     "7_7_2_2": {
@@ -849,10 +849,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 723,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.642756",
+      "started_at": "2026-04-24T17:26:14.527518",
       "completed_at": null
     },
     "6_3_3_3_3": {
@@ -864,10 +864,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.392941",
+      "started_at": "2026-04-24T17:26:14.866631",
       "completed_at": null
     },
     "13_5": {
@@ -875,11 +875,11 @@
         13,
         5
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.809662",
+      "started_at": "2026-04-24T17:26:15.338749",
       "completed_at": null
     },
     "11_4_3": {
@@ -889,10 +889,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 262,
+      "worker_id": 724,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.110925",
+      "started_at": "2026-04-24T17:26:14.919630",
       "completed_at": null
     },
     "6_2_2_2_2_2_2": {
@@ -905,12 +905,12 @@
         2,
         2
       ],
-      "status": "running",
-      "worker_id": 261,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 530,
+      "fpf_count": 478,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.442431",
-      "completed_at": null
+      "started_at": "2026-04-23T19:50:00.622932",
+      "completed_at": "2026-04-23T21:36:55.554615"
     },
     "4_3_3_3_3_2": {
       "partition": [
@@ -922,10 +922,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 262,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.150998",
+      "started_at": "2026-04-24T17:26:16.039979",
       "completed_at": null
     },
     "8_6_4": {
@@ -934,12 +934,12 @@
         6,
         4
       ],
-      "status": "failed",
-      "worker_id": 229,
-      "fpf_count": 1624,
+      "status": "running",
+      "worker_id": 724,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T15:45:06.306583",
-      "completed_at": "2026-04-11T16:18:39.619051"
+      "started_at": "2026-04-24T17:26:14.664578",
+      "completed_at": null
     },
     "8_5_3_2": {
       "partition": [
@@ -949,11 +949,11 @@
         2
       ],
       "status": "completed",
-      "worker_id": 247,
-      "fpf_count": 667,
+      "worker_id": 719,
+      "fpf_count": 1013,
       "elapsed_s": null,
-      "started_at": "2026-04-11T18:51:30.471024",
-      "completed_at": "2026-04-11T20:43:41.476916"
+      "started_at": "2026-04-24T15:28:43.849384",
+      "completed_at": null
     },
     "8_4_3_3": {
       "partition": [
@@ -963,11 +963,11 @@
         3
       ],
       "status": "completed",
-      "worker_id": 227,
-      "fpf_count": 620,
+      "worker_id": 721,
+      "fpf_count": 267,
       "elapsed_s": null,
-      "started_at": "2026-04-11T14:13:29.040640",
-      "completed_at": "2026-04-11T15:31:34.263711"
+      "started_at": "2026-04-24T15:28:44.508098",
+      "completed_at": null
     },
     "12_4_2": {
       "partition": [
@@ -975,11 +975,11 @@
         4,
         2
       ],
-      "status": "running",
-      "worker_id": 158,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 721,
+      "fpf_count": 1284,
       "elapsed_s": null,
-      "started_at": "2026-04-09T23:35:58.549740",
+      "started_at": "2026-04-24T15:28:44.555100",
       "completed_at": null
     },
     "10_6_2": {
@@ -988,12 +988,12 @@
         6,
         2
       ],
-      "status": "running",
-      "worker_id": 261,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 720,
+      "fpf_count": 306,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.327935",
-      "completed_at": null
+      "started_at": "2026-04-24T15:28:44.131973",
+      "completed_at": "2026-04-24T17:18:44.532014"
     },
     "4_4_4_2_2_2": {
       "partition": [
@@ -1004,11 +1004,11 @@
         2,
         2
       ],
-      "status": "failed",
-      "worker_id": 214,
+      "status": "running",
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T06:10:55.872057",
+      "started_at": "2026-04-24T17:26:14.999160",
       "completed_at": null
     },
     "10_8": {
@@ -1016,12 +1016,12 @@
         10,
         8
       ],
-      "status": "failed",
-      "worker_id": 228,
-      "fpf_count": 3918,
+      "status": "running",
+      "worker_id": 725,
+      "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T15:31:34.760217",
-      "completed_at": "2026-04-11T16:18:39.034060"
+      "started_at": "2026-04-24T17:26:15.059682",
+      "completed_at": null
     },
     "6_4_4_2_2": {
       "partition": [
@@ -1032,10 +1032,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.573855",
+      "started_at": "2026-04-24T17:26:15.631870",
       "completed_at": null
     },
     "12_3_3": {
@@ -1044,11 +1044,11 @@
         3,
         3
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.717347",
+      "started_at": "2026-04-24T17:26:16.340603",
       "completed_at": null
     },
     "5_4_3_3_3": {
@@ -1059,11 +1059,11 @@
         3,
         3
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.730357",
+      "started_at": "2026-04-24T17:26:16.366123",
       "completed_at": null
     },
     "7_6_5": {
@@ -1073,10 +1073,10 @@
         5
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.605862",
+      "started_at": "2026-04-24T17:26:15.202214",
       "completed_at": null
     },
     "7_6_3_2": {
@@ -1087,10 +1087,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.386976",
+      "started_at": "2026-04-24T17:26:15.750916",
       "completed_at": null
     },
     "5_5_3_3_2": {
@@ -1101,11 +1101,11 @@
         3,
         2
       ],
-      "status": "failed",
-      "worker_id": 256,
+      "status": "running",
+      "worker_id": 723,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.758531",
+      "started_at": "2026-04-24T17:26:14.473517",
       "completed_at": null
     },
     "14_4": {
@@ -1114,10 +1114,10 @@
         4
       ],
       "status": "running",
-      "worker_id": 259,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:00:44.369073",
+      "started_at": "2026-04-24T17:26:15.879440",
       "completed_at": null
     },
     "12_2_2_2": {
@@ -1128,10 +1128,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.635720",
+      "started_at": "2026-04-24T17:26:16.480654",
       "completed_at": null
     },
     "7_7_4": {
@@ -1141,10 +1141,10 @@
         4
       ],
       "status": "running",
-      "worker_id": 261,
+      "worker_id": 725,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:46:47.414909",
+      "started_at": "2026-04-24T17:26:15.315737",
       "completed_at": null
     },
     "5_5_2_2_2_2": {
@@ -1157,10 +1157,10 @@
         2
       ],
       "status": "running",
-      "worker_id": 263,
+      "worker_id": 723,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.649820",
+      "started_at": "2026-04-24T17:26:14.544524",
       "completed_at": null
     },
     "13_3_2": {
@@ -1169,12 +1169,12 @@
         3,
         2
       ],
-      "status": "running",
-      "worker_id": 263,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 530,
+      "fpf_count": 14,
       "elapsed_s": null,
-      "started_at": "2026-04-11T22:00:49.656864",
-      "completed_at": null
+      "started_at": "2026-04-23T19:50:00.598925",
+      "completed_at": "2026-04-23T21:36:55.543616"
     },
     "7_5_2_2_2": {
       "partition": [
@@ -1184,12 +1184,12 @@
         2,
         2
       ],
-      "status": "failed",
-      "worker_id": 256,
-      "fpf_count": null,
+      "status": "completed",
+      "worker_id": 556,
+      "fpf_count": 453,
       "elapsed_s": null,
-      "started_at": "2026-04-11T20:43:41.823679",
-      "completed_at": null
+      "started_at": "2026-04-24T09:04:47.131319",
+      "completed_at": "2026-04-24T09:37:55.022097"
     },
     "5_5_5_3": {
       "partition": [
@@ -1199,10 +1199,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 262,
+      "worker_id": 726,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.131958",
+      "started_at": "2026-04-24T17:26:16.017971",
       "completed_at": null
     },
     "3_3_3_3_3_3": {
@@ -1214,9 +1214,9 @@
         3,
         3
       ],
-      "status": "failed",
+      "status": "completed",
       "worker_id": 256,
-      "fpf_count": null,
+      "fpf_count": 0,
       "elapsed_s": null,
       "started_at": "2026-04-11T20:43:41.848016",
       "completed_at": null
@@ -1227,10 +1227,10 @@
         3
       ],
       "status": "running",
-      "worker_id": 262,
+      "worker_id": 727,
       "fpf_count": null,
       "elapsed_s": null,
-      "started_at": "2026-04-11T21:49:18.142483",
+      "started_at": "2026-04-24T17:26:16.577176",
       "completed_at": null
     },
     "4_2_2_2_2_2_2_2": {
@@ -1244,9 +1244,9 @@
         2,
         2
       ],
-      "status": "failed",
+      "status": "completed",
       "worker_id": 256,
-      "fpf_count": null,
+      "fpf_count": 0,
       "elapsed_s": null,
       "started_at": "2026-04-11T20:43:41.861019",
       "completed_at": null
@@ -1261,9 +1261,9 @@
         2,
         2
       ],
-      "status": "running",
+      "status": "completed",
       "worker_id": 263,
-      "fpf_count": null,
+      "fpf_count": 0,
       "elapsed_s": null,
       "started_at": "2026-04-11T22:00:49.671164",
       "completed_at": null

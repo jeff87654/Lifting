@@ -1,0 +1,32 @@
+
+LogTo("C:/Users/jeffr/Downloads/Lifting/tmp_index_only_s17_54422.log");
+Read("C:/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+Read("C:/Users/jeffr/Downloads/Lifting/holt_engine/loader.g");
+Read("C:/Users/jeffr/Downloads/Lifting/database/lift_cache.g");
+USE_HOLT_ENGINE := true;
+HOLT_ENGINE_MODE := "clean";
+CHECKPOINT_DIR := "";
+COMBO_OUTPUT_DIR := "";
+HOLT_DISABLE_BLOCK_QUOTIENT_DEDUP := true;
+HOLT_UF_INDEX_BUCKET_MIN := 40;
+partition := [5,4,4,2,2];
+currentFactors := [TransitiveGroup(5,5), TransitiveGroup(4,3), TransitiveGroup(4,3), TransitiveGroup(2,1), TransitiveGroup(2,1)];
+shifted := [];; offs := [];; off := 0;;
+for k in [1..Length(currentFactors)] do
+  Add(offs, off);
+  Add(shifted, ShiftGroup(currentFactors[k], off));
+  off := off + NrMovedPoints(currentFactors[k]);
+od;
+P := GroupByGenerators(Concatenation(List(shifted, GeneratorsOfGroup)));
+SetSize(P, Product(List(shifted, Size)));
+Nfull := BuildConjugacyTestGroup(17, partition);
+CURRENT_BLOCK_RANGES := [[1,5],[6,9],[10,13],[14,15],[16,17]];
+Print("RUN index-only [5,4,4,2,2] |P|=", Size(P), " |Nfull|=", Size(Nfull), "\n");
+if IsBound(ClearH1Cache) then ClearH1Cache(); fi;
+if IsBound(HOLT_TF_CACHE) then HOLT_TF_CACHE := rec(); fi;
+t0 := Runtime();
+r := HoltFPFSubgroupClassesOfProduct(P, shifted, offs, Nfull);
+t := (Runtime() - t0) / 1000.0;
+Print("index-only count=", Length(r), " time=", t, "s\n");
+LogTo();
+QUIT;

@@ -1,0 +1,12 @@
+USE_TF_DATABASE := true;;
+LogTo("/cygdrive/c/Users/jeffr/Downloads/Lifting/debug_655_v4.log");
+Read("/cygdrive/c/Users/jeffr/Downloads/Lifting/lifting_method_fast_v2.g");
+LIFT_CACHE.("15") := 159129;
+COMBO_OUTPUT_DIR := "/cygdrive/c/Users/jeffr/Downloads/Lifting/parallel_sn/16/[6,5,5]";
+fpf := FindFPFClassesForPartition(16, [6,5,5]);
+Print("\nRESULT_655=");
+Print(Length(fpf));
+Print("\n");
+Print("TF_LOOKUP_STATS: ", TF_LOOKUP_STATS, "\n");
+LogTo();
+QUIT;

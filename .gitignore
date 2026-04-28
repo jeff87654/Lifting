@@ -1,20 +1,107 @@
+# Python / build artifacts
 *.pyc
 __pycache__/
-temp_*.g
-nr_trans_*.log
-gap_output*.log
-# Large/temporary files
-parallel_s18/checkpoints/worker_*/
-parallel_s18/worker_*.log
-parallel_s18/worker_*.g
-parallel_s18/worker_*_heartbeat.txt
-parallel_s18/worker_*_results.txt
+*.bak
+
+# GAP saved workspace (74MB)
+lifting.ws
+
+# Editor / tool dirs
+.claude/
+
+# Build outputs and per-S_n result trees (data, not code)
 parallel_s14/
+parallel_s14_holt/
+parallel_s14_legacy_baseline/
+parallel_s14_m6m7/
+parallel_s14_r2/
+parallel_s14_r3/
 parallel_s15/
+parallel_s15_m6m7/
+parallel_s15_m6m7_v2/
+parallel_s15_verify/
 parallel_s16/
 parallel_s16_fresh/
+parallel_s16_m6m7/
 parallel_s17/
+parallel_s17_m6m7/
 parallel_s17_v2/
+parallel_s18/
+parallel_s18_82_backup/
+parallel_s18_8442_bug_backup/
+parallel_s18_bugfix1_backup/
+parallel_s18_prebugfix_backup/
+parallel_s18_random_sample_backup/
+parallel_s18_stale_sn_backup/
+parallel_s18_w810_813_backup/
+parallel_sn/
+parallel_sn_debug/
+parallel_sn_fresh/
+parallel_sn_proto/
+parallel_sn_topt/
+parallel_sn_v2/
+parallel_sn_v3/
+
+# Temp predictor work
+predict_s18_tmp/
+predict_species_tmp/
+predict_species_tmp_q2_test/
+
+# Worker / scratch dirs
+debug_s15_orbital/
+dry_run_work/
+warm_cache_work/
+rerun_w_logs/
+ref_655_by_combo/
+s16_cycle_gens/
+test_ckpt_*/
 checkpoints/
+
+# Database data subdirs (keep top-level .g code files)
+database/fpf_subdirects/
+database/ea_subdirects/
+database/tf_groups/
+database/tf_groups_backup_before_sigkey/
+database/transitive_subgroups/
+database/d4_cube_cache.g
+database/lift_cache.g
+
+# Log / diagnostic outputs
+*.log
 *.bak
+nr_trans_*.log
+gap_output*.log
+temp_*.g
 temp_commands.g
+
+# Numbered diagnostic dumps from past runs
+442_*.txt
+442_*.log
+663_*.log
+ab_outer_*.log
+all_combos_diff*.log
+all_orbital_test.log
+affine_test.log
+analyze_*.log
+1-s2.0*.txt
+
+# PDFs (papers, not code)
+*.pdf
+
+# JSON build summaries / progress dumps (regenerable)
+parallel_s18/manifest.json
+*.jsonl
+
+# Misc large/binary
+*.tar.xz
+*.tar.gz
+*.zip
+
+# Diagnostic text dumps and one-off run outputs
+*.txt
+*.stdout
+*.out
+nul
+
+# Auto-snapshot watcher status (regenerable)
+.git_snapshot.log
