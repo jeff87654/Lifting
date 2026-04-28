@@ -46,6 +46,7 @@ parallel_sn_v3/
 predict_s18_tmp/
 predict_species_tmp/
 predict_species_tmp_q2_test/
+smoke_test_fix_tmp/
 
 # Worker / scratch dirs
 debug_s15_orbital/
