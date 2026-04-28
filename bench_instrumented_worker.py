@@ -39,11 +39,14 @@ MR := 4;
 START_IDX := __START__;
 N_PAIRS := __NPAIRS__;
 UPFRONT := __UPFRONT__;
+USE_FP_LINES := __FPLINES__;
+USE_PROC_FUNC := __PROCFUNC__;
 EMIT_GENS_PATH := "__EMIT__";
 
 Print("=== bench_instrumented_worker ===\n");
 Print("ML=", ML, " MR=", MR, " START_IDX=", START_IDX, " N_PAIRS=", N_PAIRS,
-      " UPFRONT=", UPFRONT, "\n\n");
+      " UPFRONT=", UPFRONT, " USE_FP_LINES=", USE_FP_LINES,
+      " USE_PROC_FUNC=", USE_PROC_FUNC, "\n\n");
 
 # ---- helpers (verbatim from predict_2factor_topt.py) ------------------------
 ConjAction := function(K, g) return K^g; end;
@@ -103,6 +106,7 @@ end;
 
 # ---- emit setup --------------------------------------------------------------
 PrintTo(EMIT_GENS_PATH, "");
+fp_lines := [];   # production-style in-memory accumulator
 EmitGenerators := function(F)
     local gens, s;
     gens := GeneratorsOfGroup(F);
@@ -111,7 +115,11 @@ EmitGenerators := function(F)
     else
         s := "";
     fi;
-    AppendTo(EMIT_GENS_PATH, "[", s, "]\n");
+    if USE_FP_LINES = 1 then
+        Add(fp_lines, Concatenation("[", s, "]"));
+    else
+        AppendTo(EMIT_GENS_PATH, "[", s, "]\n");
+    fi;
 end;
 
 # ---- load cache + build right side ------------------------------------------
@@ -285,8 +293,15 @@ def main():
     ap.add_argument("--right-t", type=int, default=1)
     ap.add_argument("--upfront", action="store_true",
                     help="reconstruct all H1 entries upfront (mimics production)")
+    ap.add_argument("--fp-lines", action="store_true",
+                    help="accumulate fp generator lines in memory like production")
+    ap.add_argument("--proc-func", action="store_true",
+                    help="wrap pair-body in a ProcessPairBatch function like production")
     args = ap.parse_args()
-    suffix = "_upfront" if args.upfront else ""
+    suffix = ""
+    if args.upfront: suffix += "_upfront"
+    if args.fp_lines: suffix += "_fplines"
+    if args.proc_func: suffix += "_procfunc"
     sandbox = ROOT / f"bench_instrumented_tmp{suffix}"
     sandbox.mkdir(exist_ok=True)
     log = sandbox / "bench.log"
@@ -300,7 +315,9 @@ def main():
          .replace("__START__", str(args.start))
          .replace("__RIGHT_T__", str(args.right_t))
          .replace("__NPAIRS__", str(args.npairs))
-         .replace("__UPFRONT__", "1" if args.upfront else "0"))
+         .replace("__UPFRONT__", "1" if args.upfront else "0")
+         .replace("__FPLINES__", "1" if args.fp_lines else "0")
+         .replace("__PROCFUNC__", "1" if args.proc_func else "0"))
     g_path = sandbox / "bench.g"
     g_path.write_text(g, encoding="utf-8")
     bash_exe = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
