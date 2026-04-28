@@ -1,0 +1,14 @@
+{
+  "combo": "[2,1]_[2,1]_[3,2]_[3,2]",
+  "mode": "holt_split",
+  "predicted": 20,
+  "orbits": 20,
+  "swap_fixed": 0,
+  "elapsed_s": 5.6,
+  "left_combo": "[2,1]_[2,1]",
+  "right": "[3,2]_[3,2]",
+  "m_left": 4,
+  "m_right": 6,
+  "generators_file": "C:\\Users\\jeffr\\Downloads\\Lifting\\smoke_test_fix_tmp\\_tmp\\[2,1]_[2,1]_[3,2]_[3,2]\\fps.g",
+  "output_path": "C:\\Users\\jeffr\\Downloads\\Lifting\\smoke_test_fix_tmp\\[2,1]_[2,1]_[3,2]_[3,2].g"
+}
