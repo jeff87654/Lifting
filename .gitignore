@@ -47,6 +47,7 @@ predict_s18_tmp/
 predict_species_tmp/
 predict_species_tmp_q2_test/
 smoke_test_fix_tmp/
+predict_species_tmp_bespoke_4343_32/
 
 # Worker / scratch dirs
 debug_s15_orbital/
