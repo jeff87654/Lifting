@@ -184,15 +184,60 @@ for i in [START_IDX..(START_IDX + N_PAIRS - 1)] do
     t_iso := 0; t_autq := 0; t_isos_build := 0; t_bfs := 0;
     t_buildfp := 0; t_emit := 0;
 
-    # --- mimic ProcessPair general path (qsize >= 3 logic, also handles qsize=2 SAFE PATH for MR>2) ---
-    for h1_orb_idx in [2..Length(H1data.orbits)] do   # skip trivial-Q at idx 1 for clarity
+    # --- match production's full path: trivial-Q + qsize=2 SAFE PATH + general BFS ---
+    for h1_orb_idx in [1..Length(H1data.orbits)] do
         h1orb := H1data.orbits[h1_orb_idx];
         key := String(h1orb.qid);
         if not IsBound(H2DATA.byqid.(key)) then continue; fi;
+
+        # Trivial-Q (qsize=1): direct product H1 x H2.
+        if h1orb.qsize = 1 then
+            for h2idx in H2DATA.byqid.(key) do
+                h2orb := H2DATA.orbits[h2idx];
+                if h2orb.qsize <> 1 then continue; fi;
+                n_match := n_match + 1;
+                t0 := Runtime();
+                fp := Group(Concatenation(GeneratorsOfGroup(H1),
+                                          GeneratorsOfGroup(h2orb.H_ref^shift_R)));
+                t_buildfp := t_buildfp + (Runtime() - t0);
+                t0 := Runtime(); EmitGenerators(fp); t_emit := t_emit + (Runtime() - t0);
+                total_orb := total_orb + 1;
+            od;
+            continue;
+        fi;
+
+        # qsize=2 SAFE PATH (MR>2): per-match build fp without BFS shortcut.
+        if h1orb.qsize = 2 and MR > 2 then
+            for h2idx in H2DATA.byqid.(key) do
+                h2orb := H2DATA.orbits[h2idx];
+                if h2orb.qsize <> 2 then continue; fi;
+                n_match := n_match + 1;
+                t0 := Runtime(); EnsureHom(h1orb); EnsureHom(h2orb);
+                isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
+                t_iso := t_iso + (Runtime() - t0);
+                if isoTH = fail then continue; fi;
+                t0 := Runtime();
+                H2_shifted := h2orb.H_ref^shift_R;
+                fp := _GoursatBuildFiberProduct(
+                    H1, H2_shifted, h1orb.hom,
+                    CompositionMapping(h2orb.hom,
+                        ConjugatorIsomorphism(H2_shifted, shift_R^-1)),
+                    InverseGeneralMapping(isoTH),
+                    [1..ML], [ML+1..ML+MR]);
+                t_buildfp := t_buildfp + (Runtime() - t0);
+                if fp <> fail then
+                    t0 := Runtime(); EmitGenerators(fp); t_emit := t_emit + (Runtime() - t0);
+                fi;
+                total_orb := total_orb + 1;
+            od;
+            continue;
+        fi;
+
+        # General path for qsize >= 3 (also fallback for qsize=2 if MR=2; we don't hit that here).
         for h2idx in H2DATA.byqid.(key) do
             h2orb := H2DATA.orbits[h2idx];
             if h2orb.qsize <> h1orb.qsize then continue; fi;
-            if h1orb.qsize = 1 then continue; fi;   # trivial handled separately in real code; skip here
+            if h1orb.qsize = 1 then continue; fi;
 
             n_match := n_match + 1;
 
