@@ -191,10 +191,6 @@ fi;
 Print("RIGHT cache: ", Length(H2DATA.orbits), " orbits\n");
 Print("  qids: ");
 for orec in H2DATA.orbits do Print(orec.qid, " "); od;
-Print("\n  Stab sizes: ");
-for orec in H2DATA.orbits do
-    Print(Size(SafeGroup(orec.Stab_NH_KH_gens, S_MR)), " ");
-od;
 Print("\n");
 
 shift_R := MappingPermListList([1..MR], [ML+1..ML+MR]);
