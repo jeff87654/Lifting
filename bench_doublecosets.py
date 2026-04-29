@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 LIFTING_WS_CYG = "/cygdrive/c/Users/jeffr/Downloads/Lifting/lifting.ws"
-CACHE_PATH = ROOT / "predict_species_tmp/_h_cache_topt/14/[4,4,3,2]/[2,1]_[3,2]_[4,3]_[4,3].g"
+CACHE_PATH = ROOT / "predict_species_tmp/_h_cache_topt/14/[4,4,4,2]/[2,1]_[4,3]_[4,3]_[4,3].g"
 
 GAP_DRIVER = r"""
 LogTo("__LOG__");
