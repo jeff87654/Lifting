@@ -41,6 +41,7 @@ N_PAIRS := __NPAIRS__;
 UPFRONT := __UPFRONT__;
 USE_FP_LINES := __FPLINES__;
 USE_PROC_FUNC := __PROCFUNC__;
+USE_PROD_RIGHTCACHE := __PRODRIGHT__;
 EMIT_GENS_PATH := "__EMIT__";
 
 Print("=== bench_instrumented_worker ===\n");
@@ -133,21 +134,68 @@ Print("loaded LEFT cache in ", Runtime()-t0, "ms (", Length(H_CACHE), " entries)
 T_R := TransitiveGroup(MR, __RIGHT_T__);   # production RIGHT
 N_TR := Normalizer(S_MR, T_R);
 
-# Build RIGHT cache entry the way the live code does (one entry per N_TR-orbit
-# of normal subgroups of T_R), then ReconstructHData on it.
-RIGHT_NORMALS := Filtered(NormalSubgroups(T_R), K -> K <> T_R);
-RIGHT_CACHE_ENTRY := rec(
-    H_gens := GeneratorsOfGroup(T_R),
-    N_H_gens := GeneratorsOfGroup(N_TR),
-    orbits := List(RIGHT_NORMALS, K -> rec(
-        K_H_gens := GeneratorsOfGroup(K),
-        Stab_NH_KH_gens := GeneratorsOfGroup(Stabilizer(N_TR, K, ConjAction)),
-        qsize := Index(T_R, K),
-        qid := SafeId(T_R / K)
-    ))
-);
-H2DATA := ReconstructHData(RIGHT_CACHE_ENTRY, S_MR);
-Print("RIGHT cache: ", Length(H2DATA.orbits), " orbits (incl. trivial)\n\n");
+if USE_PROD_RIGHTCACHE = 1 then
+    Print("USE_PROD_RIGHTCACHE: building H2DATA via prod-style ComputeHCacheEntry...\n");
+    _ComputeOrbitRecsFromKs := function(H, N_H, normals_to_orbit)
+        local K_orbit, K_H, hom_H, Q_H, Stab_NH_KH, orbits;
+        orbits := [];
+        for K_orbit in Orbits(N_H, normals_to_orbit, ConjAction) do
+            K_H := K_orbit[1];
+            hom_H := NaturalHomomorphismByNormalSubgroup(H, K_H);
+            Q_H := Range(hom_H);
+            Stab_NH_KH := Stabilizer(N_H, K_H, ConjAction);
+            Add(orbits, rec(
+                K_H_gens := GeneratorsOfGroup(K_H),
+                Stab_NH_KH_gens := GeneratorsOfGroup(Stab_NH_KH),
+                qsize := Size(Q_H),
+                qid := SafeId(Q_H)));
+        od;
+        return orbits;
+    end;
+    BuildQ := function(MR_)
+        local result, seen, t, T, K, Q, qid;
+        result := []; seen := Set([]);
+        for t in [1..NrTransitiveGroups(MR_)] do
+            T := TransitiveGroup(MR_, t);
+            for K in NormalSubgroups(T) do
+                if Size(K) = Size(T) then continue; fi;
+                Q := T / K; qid := SafeId(Q);
+                if not (qid in seen) then AddSet(seen, qid); Add(result, Q); fi;
+            od;
+        od;
+        return result;
+    end;
+    LEFT_Q_GROUPS := BuildQ(MR);
+    qids_set := Set(List(LEFT_Q_GROUPS, SafeId));
+    all_normals := Filtered(NormalSubgroups(T_R), K -> K <> T_R);
+    normals_filtered := Filtered(all_normals, K -> SafeId(T_R/K) in qids_set);
+    H_CACHE_ENTRY_PROD := rec(
+        H_gens := GeneratorsOfGroup(T_R),
+        N_H_gens := GeneratorsOfGroup(N_TR),
+        orbits := _ComputeOrbitRecsFromKs(T_R, N_TR, normals_filtered));
+    H2DATA := ReconstructHData(H_CACHE_ENTRY_PROD, S_MR);
+else
+    RIGHT_NORMALS := Filtered(NormalSubgroups(T_R), K -> K <> T_R);
+    RIGHT_CACHE_ENTRY := rec(
+        H_gens := GeneratorsOfGroup(T_R),
+        N_H_gens := GeneratorsOfGroup(N_TR),
+        orbits := List(RIGHT_NORMALS, K -> rec(
+            K_H_gens := GeneratorsOfGroup(K),
+            Stab_NH_KH_gens := GeneratorsOfGroup(Stabilizer(N_TR, K, ConjAction)),
+            qsize := Index(T_R, K),
+            qid := SafeId(T_R / K)))
+    );
+    H2DATA := ReconstructHData(RIGHT_CACHE_ENTRY, S_MR);
+fi;
+
+Print("RIGHT cache: ", Length(H2DATA.orbits), " orbits\n");
+Print("  qids: ");
+for orec in H2DATA.orbits do Print(orec.qid, " "); od;
+Print("\n  Stab sizes: ");
+for orec in H2DATA.orbits do
+    Print(Size(SafeGroup(orec.Stab_NH_KH_gens, S_MR)), " ");
+od;
+Print("\n");
 
 shift_R := MappingPermListList([1..MR], [ML+1..ML+MR]);
 
@@ -342,11 +390,14 @@ def main():
                     help="accumulate fp generator lines in memory like production")
     ap.add_argument("--proc-func", action="store_true",
                     help="wrap pair-body in a ProcessPairBatch function like production")
+    ap.add_argument("--prod-rightcache", action="store_true",
+                    help="build H2DATA via ComputeHCacheEntry (prod-style: filtered+collapsed)")
     args = ap.parse_args()
     suffix = ""
     if args.upfront: suffix += "_upfront"
     if args.fp_lines: suffix += "_fplines"
     if args.proc_func: suffix += "_procfunc"
+    if args.prod_rightcache: suffix += "_prodright"
     sandbox = ROOT / f"bench_instrumented_tmp{suffix}"
     sandbox.mkdir(exist_ok=True)
     log = sandbox / "bench.log"
@@ -362,7 +413,8 @@ def main():
          .replace("__NPAIRS__", str(args.npairs))
          .replace("__UPFRONT__", "1" if args.upfront else "0")
          .replace("__FPLINES__", "1" if args.fp_lines else "0")
-         .replace("__PROCFUNC__", "1" if args.proc_func else "0"))
+         .replace("__PROCFUNC__", "1" if args.proc_func else "0")
+         .replace("__PRODRIGHT__", "1" if args.prod_rightcache else "0"))
     g_path = sandbox / "bench.g"
     g_path.write_text(g, encoding="utf-8")
     bash_exe = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"

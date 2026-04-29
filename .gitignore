@@ -59,6 +59,8 @@ bench_instrumented_tmp_fplines/
 bench_instrumented_tmp_upfront_fplines/
 bench_instrumented_tmp_procfunc/
 bench_instrumented_tmp_upfront_fplines_procfunc/
+bench_instrumented_tmp_upfront_fplines_prodright/
+bench_instrumented_tmp_prodright/
 
 # Worker / scratch dirs
 debug_s15_orbital/
