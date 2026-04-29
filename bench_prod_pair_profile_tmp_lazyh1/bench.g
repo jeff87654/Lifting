@@ -1,49 +1,15 @@
-"""bench_prod_pair_profile.py — profile actual pairs the production worker
-is currently processing on combo [2,1]_[2,1]_[3,2]_[4,2]_[4,3]_[4,3] (n=19).
 
-LEFT: predict_species_tmp/_h_cache_topt/15/[4,4,3,2,2]/[2,1]_[2,1]_[3,2]_[4,3]_[4,3].g
-  (4336 H1 entries — the n=15 cache for partition [4,4,3,2,2])
-RIGHT: V_4 = TransitiveGroup(4, 2)
-
-Faithful clone of production ProcessPair (with Aut-saturation shortcut and
-qsize=2 SAFE PATH from the 2026-04-28 optimizations) + per-phase ms timing.
-
-Goal: see where time goes per pair given that the saturation shortcut should
-be skipping BFS on most/all pairs.
-
-Per-pair phase columns:
-  recon       ReconstructHData(H_CACHE[i], S_ML)
-  iso         IsomorphismGroups(h2.Q, h1.Q) calls (across all matches)
-  autq        EnsureAutQ for both sides (across all matches)
-  isos        List(AsList(AutQ), a -> a*isoTH) + KeyOf-table
-  bfs         saturation check + BFS body
-  buildfp     _GoursatBuildFiberProduct (per orbit rep)
-  emit        EmitGenerators (gens listing into in-memory accumulator)
-  pair_total  total pair time
-  satshort    1 if ANY match in this pair triggered saturation shortcut, else 0
-  fps         total fp candidates emitted
-
-Output: bench_prod_pair_profile_tmp/bench.log
-"""
-import argparse, os, subprocess, sys, time
-from pathlib import Path
-
-ROOT = Path(__file__).parent
-LIFTING_WS_CYG = "/cygdrive/c/Users/jeffr/Downloads/Lifting/lifting.ws"
-CACHE_PATH = ROOT / "predict_species_tmp/_h_cache_topt/15/[4,4,3,2,2]/[2,1]_[2,1]_[3,2]_[4,3]_[4,3].g"
-
-GAP_DRIVER = r"""
-LogTo("__LOG__");
+LogTo("C:/Users/jeffr/Downloads/Lifting/bench_prod_pair_profile_tmp_lazyh1/bench.log");
 if not IsBound(_GoursatBuildFiberProduct) then
     Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g");
 fi;
 
 ML := 15;
 MR := 4;
-START_IDX := __START__;
-N_PAIRS := __NPAIRS__;
-LAZY_H1_AUT := __LAZY__;
-EMIT_GENS_PATH := "__EMIT__";
+START_IDX := 915;
+N_PAIRS := 5;
+LAZY_H1_AUT := 1;
+EMIT_GENS_PATH := "C:/Users/jeffr/Downloads/Lifting/bench_prod_pair_profile_tmp_lazyh1/emit.g";
 
 Print("=== bench_prod_pair_profile ===\n");
 Print("ML=", ML, " MR=", MR, " START_IDX=", START_IDX, " N_PAIRS=", N_PAIRS,
@@ -125,11 +91,11 @@ S_ML := SymmetricGroup(ML);
 S_MR := SymmetricGroup(MR);
 
 t0 := Runtime();
-Read("__CACHE__");
+Read("C:/Users/jeffr/Downloads/Lifting/predict_species_tmp/_h_cache_topt/15/[4,4,3,2,2]/[2,1]_[2,1]_[3,2]_[4,3]_[4,3].g");
 Print("loaded LEFT cache in ", Runtime()-t0, "ms (", Length(H_CACHE), " entries)\n");
 
-T_R := TransitiveGroup(MR, __RIGHT_T__);
-Print("RIGHT = TransitiveGroup(", MR, ",", __RIGHT_T__, ") = ", T_R, " size ", Size(T_R), "\n");
+T_R := TransitiveGroup(MR, 2);
+Print("RIGHT = TransitiveGroup(", MR, ",", 2, ") = ", T_R, " size ", Size(T_R), "\n");
 N_TR := Normalizer(S_MR, T_R);
 
 # Production-style RIGHT cache (filter normals to qids in LEFT)
@@ -345,48 +311,3 @@ od;
 Print("\n=== done ===\n");
 LogTo();
 QUIT;
-"""
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--npairs", type=int, default=10)
-    ap.add_argument("--start", type=int, default=900)
-    ap.add_argument("--right-t", type=int, default=2,
-                    help="TransitiveGroup(4, t); default 2 = V_4")
-    ap.add_argument("--lazy-h1-aut", action="store_true",
-                    help="skip EnsureAutQ(h1orb) when h2orb.full_aut is true")
-    args = ap.parse_args()
-    suffix = "_lazyh1" if args.lazy_h1_aut else ""
-    sandbox = ROOT / f"bench_prod_pair_profile_tmp{suffix}"
-    sandbox.mkdir(exist_ok=True)
-    log = sandbox / "bench.log"
-    if log.exists(): log.unlink()
-    emit = sandbox / "emit.g"
-    if emit.exists(): emit.unlink()
-    g = (GAP_DRIVER
-         .replace("__LOG__", str(log).replace("\\", "/"))
-         .replace("__EMIT__", str(emit).replace("\\", "/"))
-         .replace("__CACHE__", str(CACHE_PATH).replace("\\", "/"))
-         .replace("__START__", str(args.start))
-         .replace("__RIGHT_T__", str(args.right_t))
-         .replace("__NPAIRS__", str(args.npairs))
-         .replace("__LAZY__", "1" if args.lazy_h1_aut else "0"))
-    g_path = sandbox / "bench.g"
-    g_path.write_text(g, encoding="utf-8")
-    bash_exe = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
-    g_cyg = "/cygdrive/c/" + str(g_path)[3:].replace("\\", "/")
-    env = os.environ.copy()
-    env["PATH"] = r"C:\Program Files\GAP-4.15.1\runtime\bin;" + env.get("PATH", "")
-    env["CYGWIN"] = "nodosfilewarning"
-    cmd = (f'cd "/cygdrive/c/Program Files/GAP-4.15.1/runtime/opt/gap-4.15.1" && '
-           f'./gap.exe -q -o 0 -L "{LIFTING_WS_CYG}" "{g_cyg}"')
-    print(f"running prod-pair profile (start={args.start}, npairs={args.npairs}, right=TG(4,{args.right_t}))...")
-    t0 = time.time()
-    proc = subprocess.run([bash_exe, "--login", "-c", cmd], env=env,
-                          capture_output=True, text=True, timeout=4*3600)
-    print(f"done in {time.time()-t0:.0f}s")
-    if log.exists(): print("--- log ---"); print(log.read_text())
-    if proc.stderr: print("--- stderr ---"); print(proc.stderr[-1500:])
-
-if __name__ == "__main__":
-    main()
