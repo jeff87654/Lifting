@@ -182,7 +182,9 @@ All values S1-S15 verified against OEIS A000638:
 | S14 | 75154 | — | ~4h parallel (8 workers) |
 | S15 | 159129 | — | parallel (8 workers) |
 
-Holt's reference timings (Magma, 2008 hardware): S13=105s, S14=653s, S15=1190s
+Holt's reference timings (Magma, 2008 hardware, from Holt's a000019 paper):
+S13=105s, S14=653s, S15=1190s, S16=20,234s (~5.6h), S17=26,640s (~7.4h);
+S18 FPF computation took "approximately four cpu-days".
 
 ### Known Issues (Need Fixing, Not Disabling)
 
