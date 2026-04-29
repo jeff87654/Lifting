@@ -103,6 +103,7 @@ RunTarget := function(label, cache_path, ML, right_d, right_t, sample_n)
     Print("  RIGHT orbits: ", Length(H2DATA.orbits), "  saturation:");
     for h2orb in H2DATA.orbits do
         if h2orb.qsize <= 1 then Print(" [triv]");
+        elif h2orb.qsize = 2 then Print(" [qs=2 |Aut|=1 full=true]");
         else Print(" [qs=", h2orb.qsize, " |Aut|=", Size(h2orb.AutQ),
                    " full=", h2orb.full_aut, "]"); fi;
     od;
