@@ -926,8 +926,13 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
             EnsureHom(h1orb); EnsureHom(h2orb);
             isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
             if isoTH = fail then continue; fi;
-            EnsureAutQ(h1orb);
+            # Optimization (5) 2026-04-29: lazy h1.AutQ.  h2 is the RIGHT
+            # factor and is pre-warmed at startup; for high-symmetry RIGHTs
+            # (e.g. V_4 where N_{S_4}(V_4)/V_4 = S_3 = Aut), h2 saturates
+            # for every orbit and forces n_orb=1.  Test h2 first; only build
+            # h1.AutQ when h2 does NOT saturate.  ~2.5x on V_4-right combos.
             EnsureAutQ(h2orb);
+            if h2orb.full_aut <> true then EnsureAutQ(h1orb); fi;
 
             # Optimization (1)+(3) 2026-04-28: early Aut-saturation shortcut
             # using cached full_aut flag.  Skip building isos+idx+KeyOf for
@@ -1718,10 +1723,13 @@ for job_idx in [1..Length(JOBS)] do
                 EnsureHom(h1orb); EnsureHom(h2orb);
                 isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
                 if isoTH = fail then continue; fi;
-                # Lazy compute AutQ + A_gens (skipped if RIGHT only has Q's
-                # of size <=2, which use fast paths).
-                EnsureAutQ(h1orb);
+                # Optimization (5) 2026-04-29: lazy h1.AutQ.  h2 is the RIGHT
+                # factor and is pre-warmed at startup; for high-symmetry RIGHTs
+                # (e.g. V_4 where N_{S_4}(V_4)/V_4 = S_3 = Aut), h2 saturates
+                # for every orbit and forces n_orb=1.  Test h2 first; only build
+                # h1.AutQ when h2 does NOT saturate.  ~2.5x on V_4-right combos.
                 EnsureAutQ(h2orb);
+                if h2orb.full_aut <> true then EnsureAutQ(h1orb); fi;
 
                 # Optimization (1)+(3) 2026-04-28: early Aut-saturation shortcut
                 # using cached full_aut flag.  Skip building isos+idx for
@@ -2539,8 +2547,13 @@ for group_idx in [1..Length(GROUPS)] do
                     EnsureHom(h1orb); EnsureHom(h2orb);
                     isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
                     if isoTH = fail then continue; fi;
-                    EnsureAutQ(h1orb);
+                    # Optimization (5) 2026-04-29: lazy h1.AutQ.  h2 is the RIGHT
+                    # factor and is pre-warmed at startup; for high-symmetry RIGHTs
+                    # (e.g. V_4 where N_{S_4}(V_4)/V_4 = S_3 = Aut), h2 saturates
+                    # for every orbit and forces n_orb=1.  Test h2 first; only build
+                    # h1.AutQ when h2 does NOT saturate.  ~2.5x on V_4-right combos.
                     EnsureAutQ(h2orb);
+                    if h2orb.full_aut <> true then EnsureAutQ(h1orb); fi;
 
                     # Optimization (1)+(3) 2026-04-28: early Aut-saturation
                     # shortcut using cached full_aut flag.
