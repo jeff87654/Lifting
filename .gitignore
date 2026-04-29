@@ -53,6 +53,8 @@ bench_enum_mr4/
 bench_fp_construct_tmp/
 bench_instrumented_tmp/
 bench_instrumented_tmp_upfront/
+bench_prodcopy_tmp/
+bench_prodcopy.g
 bench_instrumented_tmp_fplines/
 bench_instrumented_tmp_upfront_fplines/
 bench_instrumented_tmp_procfunc/
