@@ -63,6 +63,7 @@ bench_instrumented_tmp_upfront_fplines_prodright/
 bench_instrumented_tmp_prodright/
 bench_pivot_tmp_*/
 _pivot_runner_*.py
+bench_dc_tmp/
 
 # Worker / scratch dirs
 debug_s15_orbital/
