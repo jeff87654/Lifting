@@ -1764,6 +1764,20 @@ for job_idx in [1..Length(JOBS)] do
                 idx := rec();
                 for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
 
+                # Aut-saturation shortcut: if EITHER side's A_gens generates
+                # full Aut(Q), action is transitive on Iso(Q,Q) -> exactly 1
+                # orbit, no BFS needed.
+                if Length(h1orb.A_gens) > 0 and
+                   Size(Subgroup(h1orb.AutQ, h1orb.A_gens)) = Size(h1orb.AutQ) then
+                    n_orb := 1;
+                    orbit_reps_phi := [isos[1]];
+                    orbit_id := ListWithIdenticalEntries(n, 1);
+                elif Length(h2orb.A_gens) > 0 and
+                     Size(Subgroup(h2orb.AutQ, h2orb.A_gens)) = Size(h2orb.AutQ) then
+                    n_orb := 1;
+                    orbit_reps_phi := [isos[1]];
+                    orbit_id := ListWithIdenticalEntries(n, 1);
+                else
                 seen := ListWithIdenticalEntries(n, false);
                 orbit_id := ListWithIdenticalEntries(n, 0);
                 n_orb := 0;
@@ -1799,6 +1813,7 @@ for job_idx in [1..Length(JOBS)] do
                         od;
                     od;
                 od;
+                fi;   # end Aut-saturation shortcut else-branch
                 total := total + n_orb;
 
                 # Compute swap-orbit-id per orbit rep (used for both within-pair
@@ -2574,6 +2589,19 @@ for group_idx in [1..Length(GROUPS)] do
                     idx := rec();
                     for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
 
+                    # Aut-saturation shortcut: if EITHER side's A_gens generates
+                    # full Aut(Q), action is transitive on Iso(Q,Q) -> 1 orbit.
+                    if Length(h1orb.A_gens) > 0 and
+                       Size(Subgroup(h1orb.AutQ, h1orb.A_gens)) = Size(h1orb.AutQ) then
+                        n_orb := 1;
+                        orbit_reps_phi := [isos[1]];
+                        orbit_id := ListWithIdenticalEntries(n, 1);
+                    elif Length(h2orb.A_gens) > 0 and
+                         Size(Subgroup(h2orb.AutQ, h2orb.A_gens)) = Size(h2orb.AutQ) then
+                        n_orb := 1;
+                        orbit_reps_phi := [isos[1]];
+                        orbit_id := ListWithIdenticalEntries(n, 1);
+                    else
                     seen := ListWithIdenticalEntries(n, false);
                     orbit_id := ListWithIdenticalEntries(n, 0);
                     n_orb := 0;
@@ -2609,6 +2637,7 @@ for group_idx in [1..Length(GROUPS)] do
                             od;
                         od;
                     od;
+                    fi;   # end Aut-saturation shortcut else-branch
                     total := total + n_orb;
 
                     # Compute swap-orbit-id per orbit rep (for within-self-pair
