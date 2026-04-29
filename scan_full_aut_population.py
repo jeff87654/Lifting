@@ -110,7 +110,7 @@ end;
 # ---- per-target driver ----
 RunTarget := function(label, cache_path, ML, right_d, right_t, sample_n)
     local S_ML, S_MR, T_R, N_TR, all_normals, _ComputeOrbitRecsFromKs,
-          H_CACHE_ENTRY_PROD, H2DATA, H_CACHE, n_pairs, indices, i, idx, e,
+          H_CACHE_ENTRY_PROD, H2DATA, n_pairs, indices, i, idx, e,
           h1data, key, h1orb, h2idx, h2orb, t_load,
           n_triv, n_q2, n_h2sat, n_h1sat, n_bfs, bfs_hist, bfs_key,
           h1_orbit_summary, h2_orbit_summary;
