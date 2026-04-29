@@ -52,12 +52,7 @@ end;
 EnsureAutQ := function(orb)
     if orb.AutQ <> fail then return; fi;
     if orb.qsize <= 1 then orb.full_aut := true; return; fi;
-    if orb.qsize = 2 then
-        orb.AutQ := AutomorphismGroup(orb.Q);
-        orb.A_gens := [];
-        orb.full_aut := true;   # |Aut(C_2)|=1
-        return;
-    fi;
+    if orb.qsize = 2 then orb.full_aut := true; return; fi;
     EnsureHom(orb);
     orb.AutQ := AutomorphismGroup(orb.Q);
     orb.A_gens := InducedAutoGens(orb.Stab, orb.H_ref, orb.hom);
