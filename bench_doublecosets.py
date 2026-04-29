@@ -178,10 +178,10 @@ Print(pad("h1_idx",7), pad("|H1|",6), pad("|Aut(Q)|",10), pad("|A1|",6), pad("|A
 t_bfs_total := 0; t_dc_total := 0; n_pairs_tested := 0;
 for h1_idx in [1..N_PAIRS] do
     h1data := ReconstructHData(H_CACHE[h1_idx], S_ML);
-    # Find first non-trivial (qsize >= 2) h1.orbit that matches an H2 orbit
+    # Find h1.orbit where A_gens does NOT saturate Aut(Q) (non-trivial BFS case)
     for h1_orb_idx in [2..Length(h1data.orbits)] do
         h1orb := h1data.orbits[h1_orb_idx];
-        if h1orb.qsize <= 2 then continue; fi;  # skip trivial-Q and qsize=2 (handled by direct path)
+        if h1orb.qsize <= 2 then continue; fi;  # skip trivial-Q and qsize=2 (direct path)
         key := String(h1orb.qid);
         if not IsBound(H2DATA.byqid.(key)) then continue; fi;
         for h2idx in H2DATA.byqid.(key) do
@@ -191,11 +191,17 @@ for h1_idx in [1..N_PAIRS] do
             isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
             if isoTH = fail then continue; fi;
             EnsureAutQ(h1orb); EnsureAutQ(h2orb);
-            # Bench both
+            # Skip if EITHER side saturates (production already shortcuts these)
+            sat1 := Length(h1orb.A_gens) > 0 and
+                    Size(Subgroup(h1orb.AutQ, h1orb.A_gens)) = Size(h1orb.AutQ);
+            sat2 := Length(h2orb.A_gens) > 0 and
+                    Size(Subgroup(h2orb.AutQ, h2orb.A_gens)) = Size(h2orb.AutQ);
+            if sat1 or sat2 then continue; fi;
+            # Non-saturating case — bench both
             r_bfs := CountOrbitsBFS(h1orb, h2orb, isoTH);
             r_dc  := CountOrbitsDC(h1orb, h2orb, isoTH);
             speedup := Float(r_bfs.t_setup + r_bfs.t_bfs) / Float(Maximum(r_dc.t_total, 1));
-            ok := When(r_bfs.n_orb = r_dc.n_orb, "OK", "DIFF!");
+            if r_bfs.n_orb = r_dc.n_orb then ok := "OK"; else ok := "DIFF!"; fi;
             speedup_str := String(speedup);
             Print(pad(h1_idx,7), pad(Size(h1data.H),6), pad(Size(h1orb.AutQ),10),
                   pad(Length(h1orb.A_gens),6), pad(Length(h2orb.A_gens),6),
@@ -242,7 +248,7 @@ def main():
     g = (GAP_DRIVER
          .replace("__LOG__", str(log).replace("\\", "/"))
          .replace("__CACHE__", str(cache).replace("\\", "/"))
-         .replace("__NPAIRS__", "12"))
+         .replace("__NPAIRS__", "200"))
     g_path = sandbox / "bench.g"
     g_path.write_text(g, encoding="utf-8")
     bash_exe = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
