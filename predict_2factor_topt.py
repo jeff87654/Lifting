@@ -367,7 +367,7 @@ ReconstructHData := function(entry, S_M)
     hom_triv := NaturalHomomorphismByNormalSubgroup(H, H);
     Add(res.orbits, rec(K := H, hom := hom_triv, Q := Range(hom_triv),
         qsize := 1, qid := SafeId(Range(hom_triv)),
-        Stab := N, AutQ := fail, A_gens := [],
+        Stab := N, AutQ := fail, A_gens := [], full_aut := fail,
         H_ref := H));
     # Non-trivial orbits: hom and Q are deferred (computed lazily by EnsureHom).
     # NaturalHomomorphismByNormalSubgroup is the dominant cost for large H,
@@ -378,7 +378,7 @@ ReconstructHData := function(entry, S_M)
         Stab := SafeGroup(orbit_data.Stab_NH_KH_gens, S_M);
         Add(res.orbits, rec(K := K, hom := fail, Q := fail,
             qsize := orbit_data.qsize, qid := orbit_data.qid,
-            Stab := Stab, AutQ := fail, A_gens := [],
+            Stab := Stab, AutQ := fail, A_gens := [], full_aut := fail,
             H_ref := H));
     od;
     res.byqid := rec();
@@ -405,6 +405,12 @@ EnsureAutQ := function(orb)
     EnsureHom(orb);   # AutQ depends on Q
     orb.AutQ := AutomorphismGroup(orb.Q);
     orb.A_gens := InducedAutoGens(orb.Stab, orb.H_ref, orb.hom);
+    # Optimization (3) 2026-04-28: cache full_aut.
+    if Length(orb.A_gens) = 0 then
+        orb.full_aut := false;
+    else
+        orb.full_aut := (Size(Subgroup(orb.AutQ, orb.A_gens)) = Size(orb.AutQ));
+    fi;
 end;
 
 # ---- block-wreath ambient for normalizer computation ------------------
@@ -883,14 +889,15 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
             continue;
         fi;
 
-        # |Q| = 2 fast path: gated by MR = 2 (RIGHT IS C_2 directly).
+        # |Q| = 2 fast path: |Aut(C_2)|=1 so direct <K1, K2^shift, h_0*t_0^shift>
+        # construction works for ANY MR.  Optimization (2) 2026-04-28: generalized
+        # from MR=2-only to all MR.
         if h1orb.qsize = 2 then
-            if MR = 2 then
-                # FAST PATH: RIGHT is C_2 directly. burnside_m2 cannot apply.
-                for h2idx in h2idxs do
-                    if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
-                    total := total + 1;
-                    h2orb := H2data.orbits[h2idx];
+            for h2idx in h2idxs do
+                if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
+                total := total + 1;
+                h2orb := H2data.orbits[h2idx];
+                if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
                     if GEN_FILE_OPEN then
                         h_0 := First(GeneratorsOfGroup(H1),
                                      g -> not (g in h1orb.K));
@@ -904,34 +911,11 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                             [h_0 * t_0^shift_R]));
                         EmitGenerators(fp);
                     fi;
-                od;
-            else
-                # SAFE PATH for MR > 2 (burnside_m2 self-pair canonical-gated).
-                for h2idx in h2idxs do
-                    if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
-                    total := total + 1;
-                    h2orb := H2data.orbits[h2idx];
-                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                        EnsureHom(h1orb); EnsureHom(h2orb);
-                        if GEN_FILE_OPEN then
-                            isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
-                            if isoTH <> fail then
-                                fp := _GoursatBuildFiberProduct(
-                                    H1, H2,
-                                    h1orb.hom,
-                                    CompositionMapping(h2orb.hom,
-                                        ConjugatorIsomorphism(H2, shift_R^-1)),
-                                    InverseGeneralMapping(isoTH),
-                                    [1..ML], [ML+1..ML+MR]);
-                                if fp <> fail then EmitGenerators(fp); fi;
-                            fi;
-                        fi;
-                    fi;
-                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                        swap_fixed := swap_fixed + 1;
-                    fi;
-                od;
-            fi;
+                fi;
+                if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                    swap_fixed := swap_fixed + 1;
+                fi;
+            od;
             continue;
         fi;
 
@@ -945,29 +929,21 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
             EnsureAutQ(h1orb);
             EnsureAutQ(h2orb);
 
-            isos := List(AsList(h2orb.AutQ), a -> a * isoTH);
-            n := Length(isos);
-            gensQ := GeneratorsOfGroup(h2orb.Q);
-            KeyOf := function(phi) return List(gensQ, q -> Image(phi, q)); end;
-            idx := rec();
-            for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
-
-            # Aut-saturation shortcut: if EITHER side's A_gens generates the
-            # full Aut(Q), that side's action alone is transitive on Iso(Q,Q),
-            # so there is exactly 1 orbit -- no BFS needed.  This collapses
-            # the |Aut(S_n)|=n! BFS for combos like [n,t]_[n,t] with simple Q
-            # (e.g., [7,7]_[7,7] with Q=S_7) to constant work.
-            if Length(h1orb.A_gens) > 0 and
-               Size(Subgroup(h1orb.AutQ, h1orb.A_gens)) = Size(h1orb.AutQ) then
+            # Optimization (1)+(3) 2026-04-28: early Aut-saturation shortcut
+            # using cached full_aut flag.  Skip building isos+idx+KeyOf for
+            # the saturated case (the common case for high-symmetry RIGHTs).
+            if h1orb.full_aut = true or h2orb.full_aut = true then
                 n_orb := 1;
-                orbit_reps_phi := [isos[1]];
-                orbit_id := ListWithIdenticalEntries(n, 1);
-            elif Length(h2orb.A_gens) > 0 and
-                 Size(Subgroup(h2orb.AutQ, h2orb.A_gens)) = Size(h2orb.AutQ) then
-                n_orb := 1;
-                orbit_reps_phi := [isos[1]];
-                orbit_id := ListWithIdenticalEntries(n, 1);
+                orbit_reps_phi := [isoTH];
+                # idx, isos not built; not needed (no BFS, no swap-orbit lookup
+                # for n_orb=1 — handled in swap_orb_id_arr block below).
             else
+                isos := List(AsList(h2orb.AutQ), a -> a * isoTH);
+                n := Length(isos);
+                gensQ := GeneratorsOfGroup(h2orb.Q);
+                KeyOf := function(phi) return List(gensQ, q -> Image(phi, q)); end;
+                idx := rec();
+                for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
                 seen := ListWithIdenticalEntries(n, false);
                 orbit_id := ListWithIdenticalEntries(n, 0);
                 n_orb := 0;
@@ -1011,14 +987,19 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
             # canonical emission gate and swap_fixed counter).
             swap_orb_id_arr := ListWithIdenticalEntries(n_orb, -1);
             if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                for i in [1..n_orb] do
-                    phi := orbit_reps_phi[i];
-                    swap_phi := InverseGeneralMapping(phi);
-                    swap_key := String(KeyOf(swap_phi));
-                    if IsBound(idx.(swap_key)) then
-                        swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
-                    fi;
-                od;
+                if h1orb.full_aut = true or h2orb.full_aut = true then
+                    # Optimization (1) shortcut: 1 orbit, trivially swap-fixed.
+                    swap_orb_id_arr[1] := 1;
+                else
+                    for i in [1..n_orb] do
+                        phi := orbit_reps_phi[i];
+                        swap_phi := InverseGeneralMapping(phi);
+                        swap_key := String(KeyOf(swap_phi));
+                        if IsBound(idx.(swap_key)) then
+                            swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
+                        fi;
+                    od;
+                fi;
             fi;
 
             # Generator emission per orbit rep, canonical-gated.
@@ -1145,7 +1126,7 @@ ReconstructHData := function(entry, S_M)
     hom_triv := NaturalHomomorphismByNormalSubgroup(H, H);
     Add(res.orbits, rec(K := H, hom := hom_triv, Q := Range(hom_triv),
         qsize := 1, qid := SafeId(Range(hom_triv)),
-        Stab := N, AutQ := fail, A_gens := [],
+        Stab := N, AutQ := fail, A_gens := [], full_aut := fail,
         H_ref := H));
     # Non-trivial orbits: hom and Q are deferred (computed lazily by EnsureHom).
     # NaturalHomomorphismByNormalSubgroup is the dominant cost for large H,
@@ -1156,7 +1137,7 @@ ReconstructHData := function(entry, S_M)
         Stab := SafeGroup(orbit_data.Stab_NH_KH_gens, S_M);
         Add(res.orbits, rec(K := K, hom := fail, Q := fail,
             qsize := orbit_data.qsize, qid := orbit_data.qid,
-            Stab := Stab, AutQ := fail, A_gens := [],
+            Stab := Stab, AutQ := fail, A_gens := [], full_aut := fail,
             H_ref := H));
     od;
     res.byqid := rec();
@@ -1183,6 +1164,12 @@ EnsureAutQ := function(orb)
     EnsureHom(orb);   # AutQ depends on Q
     orb.AutQ := AutomorphismGroup(orb.Q);
     orb.A_gens := InducedAutoGens(orb.Stab, orb.H_ref, orb.hom);
+    # Optimization (3) 2026-04-28: cache full_aut.
+    if Length(orb.A_gens) = 0 then
+        orb.full_aut := false;
+    else
+        orb.full_aut := (Size(Subgroup(orb.AutQ, orb.A_gens)) = Size(orb.AutQ));
+    fi;
 end;
 
 # ---- block-wreath ambient for normalizer computation ------------------
@@ -1698,15 +1685,14 @@ for job_idx in [1..Length(JOBS)] do
             fi;
 
             if h1orb.qsize = 2 then
-                if MR = 2 then
-                    # FAST PATH: RIGHT is C_2 (TG(2,1)) directly. Aut(C_2)
-                    # trivial, iso unique. burnside_m2 cannot apply here
-                    # (combo [2,1]^2 routes to c2_fast, never reaches here).
-                    # F = <gens(K_H), gens(K_T)^shift_R, h_0 * (t_0)^shift_R>
-                    for h2idx in h2idxs do
-                        h2orb := H2data.orbits[h2idx];
-                        if h2orb.qsize <> 2 then continue; fi;
-                        total := total + 1;
+                # Optimization (2) 2026-04-28: |Aut(C_2)|=1 so the direct
+                # <K1, K2^shift, h_0*t_0^shift> construction works for ANY MR
+                # (was previously only used for MR=2).
+                for h2idx in h2idxs do
+                    h2orb := H2data.orbits[h2idx];
+                    if h2orb.qsize <> 2 then continue; fi;
+                    total := total + 1;
+                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
                         h_0 := First(GeneratorsOfGroup(H1),
                                      g -> not (g in h1orb.K));
                         t_0 := First(GeneratorsOfGroup(H2data.H),
@@ -1718,31 +1704,11 @@ for job_idx in [1..Length(JOBS)] do
                                  g -> g^shift_R),
                             [h_0 * t_0^shift_R]));
                         EmitGen(fp);
-                    od;
-                else
-                    # SAFE PATH for MR > 2 (covers burnside_m2 self-pair).
-                    for h2idx in h2idxs do
-                        h2orb := H2data.orbits[h2idx];
-                        if h2orb.qsize <> 2 then continue; fi;
-                        total := total + 1;
-                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                            EnsureHom(h1orb); EnsureHom(h2orb);
-                            isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
-                            if isoTH <> fail then
-                                fp := _GoursatBuildFiberProduct(
-                                    H1, H2, h1orb.hom,
-                                    CompositionMapping(h2orb.hom,
-                                        ConjugatorIsomorphism(H2, shift_R^-1)),
-                                    InverseGeneralMapping(isoTH),
-                                    [1..ML], [ML+1..ML+MR]);
-                                if fp <> fail then EmitGen(fp); fi;
-                            fi;
-                        fi;
-                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                            swap_fixed := swap_fixed + 1;
-                        fi;
-                    od;
-                fi;
+                    fi;
+                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                        swap_fixed := swap_fixed + 1;
+                    fi;
+                od;
                 continue;
             fi;
 
@@ -1757,27 +1723,19 @@ for job_idx in [1..Length(JOBS)] do
                 EnsureAutQ(h1orb);
                 EnsureAutQ(h2orb);
 
+                # Optimization (1)+(3) 2026-04-28: early Aut-saturation shortcut
+                # using cached full_aut flag.  Skip building isos+idx for
+                # the saturated case (the common case for high-symmetry RIGHTs).
+                if h1orb.full_aut = true or h2orb.full_aut = true then
+                    n_orb := 1;
+                    orbit_reps_phi := [isoTH];
+                else
                 isos := List(AsList(h2orb.AutQ), a -> a * isoTH);
                 n := Length(isos);
                 gensQ := GeneratorsOfGroup(h2orb.Q);
                 KeyOf := function(phi) return List(gensQ, q -> Image(phi, q)); end;
                 idx := rec();
                 for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
-
-                # Aut-saturation shortcut: if EITHER side's A_gens generates
-                # full Aut(Q), action is transitive on Iso(Q,Q) -> exactly 1
-                # orbit, no BFS needed.
-                if Length(h1orb.A_gens) > 0 and
-                   Size(Subgroup(h1orb.AutQ, h1orb.A_gens)) = Size(h1orb.AutQ) then
-                    n_orb := 1;
-                    orbit_reps_phi := [isos[1]];
-                    orbit_id := ListWithIdenticalEntries(n, 1);
-                elif Length(h2orb.A_gens) > 0 and
-                     Size(Subgroup(h2orb.AutQ, h2orb.A_gens)) = Size(h2orb.AutQ) then
-                    n_orb := 1;
-                    orbit_reps_phi := [isos[1]];
-                    orbit_id := ListWithIdenticalEntries(n, 1);
-                else
                 seen := ListWithIdenticalEntries(n, false);
                 orbit_id := ListWithIdenticalEntries(n, 0);
                 n_orb := 0;
@@ -1822,14 +1780,19 @@ for job_idx in [1..Length(JOBS)] do
                 # rep j (where j = swap_orb_id_arr[i]).  Emit only when i <= j.
                 swap_orb_id_arr := ListWithIdenticalEntries(n_orb, -1);
                 if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                    for i in [1..n_orb] do
-                        phi := orbit_reps_phi[i];
-                        swap_phi := InverseGeneralMapping(phi);
-                        swap_key := String(KeyOf(swap_phi));
-                        if IsBound(idx.(swap_key)) then
-                            swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
-                        fi;
-                    od;
+                    if h1orb.full_aut = true or h2orb.full_aut = true then
+                        # Optimization (1) shortcut: 1 orbit, trivially swap-fixed.
+                        swap_orb_id_arr[1] := 1;
+                    else
+                        for i in [1..n_orb] do
+                            phi := orbit_reps_phi[i];
+                            swap_phi := InverseGeneralMapping(phi);
+                            swap_key := String(KeyOf(swap_phi));
+                            if IsBound(idx.(swap_key)) then
+                                swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
+                            fi;
+                        od;
+                    fi;
                 fi;
 
                 # Emit orbit reps (canonical-gated).
@@ -1880,6 +1843,12 @@ for job_idx in [1..Length(JOBS)] do
     Print("    [t+", Runtime() - job_t0, "ms] starting H1xH2 loop: ",
           Length(H1DATA_LIST), " x ", Length(H2DATA),
           " = ", n_pairs_total, " pairs\n");
+    # Optimization (4) 2026-04-28: precompute shifted RIGHT once per j outside
+    # the i loop.  For burnside_m2 mode, H2DATA[1] gets overwritten per-i so
+    # we must compute per-pair (only 1 entry, so cheap).
+    if BURNSIDE_M2 = 0 then
+        H2_SHIFTED := List(H2DATA, hd -> hd.H^shift_R);
+    fi;
     for i in [1..Length(H1DATA_LIST)] do
         H1data_j := H1DATA_LIST[i];
         H1_j := H1data_j.H;
@@ -1889,7 +1858,11 @@ for job_idx in [1..Length(JOBS)] do
         fi;
         for j in [1..Length(H2DATA)] do
             H2data_j := H2DATA[j];
-            H2_j := H2data_j.H^shift_R;
+            if BURNSIDE_M2 = 0 then
+                H2_j := H2_SHIFTED[j];
+            else
+                H2_j := H2data_j.H^shift_R;
+            fi;
             res_pair := ProcessPairBatch(H1data_j, H2data_j, H1_j, H2_j);
             TOTAL_ORB := TOTAL_ORB + res_pair.orbits;
             TOTAL_FIX := TOTAL_FIX + res_pair.swap_fixed;
@@ -1976,7 +1949,7 @@ ReconstructHData := function(entry, S_M)
     hom_triv := NaturalHomomorphismByNormalSubgroup(H, H);
     Add(res.orbits, rec(K := H, hom := hom_triv, Q := Range(hom_triv),
         qsize := 1, qid := SafeId(Range(hom_triv)),
-        Stab := N, AutQ := fail, A_gens := [],
+        Stab := N, AutQ := fail, A_gens := [], full_aut := fail,
         H_ref := H));
     # Non-trivial orbits: hom and Q are deferred (computed lazily by EnsureHom).
     # NaturalHomomorphismByNormalSubgroup is the dominant cost for large H,
@@ -1987,7 +1960,7 @@ ReconstructHData := function(entry, S_M)
         Stab := SafeGroup(orbit_data.Stab_NH_KH_gens, S_M);
         Add(res.orbits, rec(K := K, hom := fail, Q := fail,
             qsize := orbit_data.qsize, qid := orbit_data.qid,
-            Stab := Stab, AutQ := fail, A_gens := [],
+            Stab := Stab, AutQ := fail, A_gens := [], full_aut := fail,
             H_ref := H));
     od;
     res.byqid := rec();
@@ -2014,6 +1987,12 @@ EnsureAutQ := function(orb)
     EnsureHom(orb);   # AutQ depends on Q
     orb.AutQ := AutomorphismGroup(orb.Q);
     orb.A_gens := InducedAutoGens(orb.Stab, orb.H_ref, orb.hom);
+    # Optimization (3) 2026-04-28: cache full_aut.
+    if Length(orb.A_gens) = 0 then
+        orb.full_aut := false;
+    else
+        orb.full_aut := (Size(Subgroup(orb.AutQ, orb.A_gens)) = Size(orb.AutQ));
+    fi;
 end;
 
 # ---- block-wreath ambient for normalizer computation ------------------
@@ -2527,12 +2506,13 @@ for group_idx in [1..Length(GROUPS)] do
                 fi;
 
                 if h1orb.qsize = 2 then
-                    if MR = 2 then
-                        # FAST PATH: RIGHT is C_2 (burnside_m2 can't apply).
-                        for h2idx in h2idxs do
-                            h2orb := H2data.orbits[h2idx];
-                            if h2orb.qsize <> 2 then continue; fi;
-                            total := total + 1;
+                    # Optimization (2) 2026-04-28: |Aut(C_2)|=1 -> direct
+                    # construction works for all MR.
+                    for h2idx in h2idxs do
+                        h2orb := H2data.orbits[h2idx];
+                        if h2orb.qsize <> 2 then continue; fi;
+                        total := total + 1;
+                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
                             h_0 := First(GeneratorsOfGroup(H1),
                                          g -> not (g in h1orb.K));
                             t_0 := First(GeneratorsOfGroup(H2data.H),
@@ -2545,31 +2525,11 @@ for group_idx in [1..Length(GROUPS)] do
                                      g -> g^shift_R),
                                 [h_0 * t_0^shift_R]));
                             EmitGen(fp);
-                        od;
-                    else
-                        # SAFE PATH for MR > 2 (covers burnside_m2).
-                        for h2idx in h2idxs do
-                            h2orb := H2data.orbits[h2idx];
-                            if h2orb.qsize <> 2 then continue; fi;
-                            total := total + 1;
-                            if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                                EnsureHom(h1orb); EnsureHom(h2orb);
-                                isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
-                                if isoTH <> fail then
-                                    fp := _GoursatBuildFiberProduct(
-                                        H1, H2, h1orb.hom,
-                                        CompositionMapping(h2orb.hom,
-                                            ConjugatorIsomorphism(H2, shift_R^-1)),
-                                        InverseGeneralMapping(isoTH),
-                                        [1..ML], [ML+1..ML+MR]);
-                                    if fp <> fail then EmitGen(fp); fi;
-                                fi;
-                            fi;
-                            if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                                swap_fixed := swap_fixed + 1;
-                            fi;
-                        od;
-                    fi;
+                        fi;
+                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                            swap_fixed := swap_fixed + 1;
+                        fi;
+                    od;
                     continue;
                 fi;
 
@@ -2582,26 +2542,18 @@ for group_idx in [1..Length(GROUPS)] do
                     EnsureAutQ(h1orb);
                     EnsureAutQ(h2orb);
 
+                    # Optimization (1)+(3) 2026-04-28: early Aut-saturation
+                    # shortcut using cached full_aut flag.
+                    if h1orb.full_aut = true or h2orb.full_aut = true then
+                        n_orb := 1;
+                        orbit_reps_phi := [isoTH];
+                    else
                     isos := List(AsList(h2orb.AutQ), a -> a * isoTH);
                     n := Length(isos);
                     gensQ := GeneratorsOfGroup(h2orb.Q);
                     KeyOf := function(phi) return List(gensQ, q -> Image(phi, q)); end;
                     idx := rec();
                     for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
-
-                    # Aut-saturation shortcut: if EITHER side's A_gens generates
-                    # full Aut(Q), action is transitive on Iso(Q,Q) -> 1 orbit.
-                    if Length(h1orb.A_gens) > 0 and
-                       Size(Subgroup(h1orb.AutQ, h1orb.A_gens)) = Size(h1orb.AutQ) then
-                        n_orb := 1;
-                        orbit_reps_phi := [isos[1]];
-                        orbit_id := ListWithIdenticalEntries(n, 1);
-                    elif Length(h2orb.A_gens) > 0 and
-                         Size(Subgroup(h2orb.AutQ, h2orb.A_gens)) = Size(h2orb.AutQ) then
-                        n_orb := 1;
-                        orbit_reps_phi := [isos[1]];
-                        orbit_id := ListWithIdenticalEntries(n, 1);
-                    else
                     seen := ListWithIdenticalEntries(n, false);
                     orbit_id := ListWithIdenticalEntries(n, 0);
                     n_orb := 0;
@@ -2644,14 +2596,19 @@ for group_idx in [1..Length(GROUPS)] do
                     # canonical emission gate AND swap_fixed counter).
                     swap_orb_id_arr := ListWithIdenticalEntries(n_orb, -1);
                     if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                        for i in [1..n_orb] do
-                            phi := orbit_reps_phi[i];
-                            swap_phi := InverseGeneralMapping(phi);
-                            swap_key := String(KeyOf(swap_phi));
-                            if IsBound(idx.(swap_key)) then
-                                swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
-                            fi;
-                        od;
+                        if h1orb.full_aut = true or h2orb.full_aut = true then
+                            # Optimization (1) shortcut: 1 orbit, trivially swap-fixed.
+                            swap_orb_id_arr[1] := 1;
+                        else
+                            for i in [1..n_orb] do
+                                phi := orbit_reps_phi[i];
+                                swap_phi := InverseGeneralMapping(phi);
+                                swap_key := String(KeyOf(swap_phi));
+                                if IsBound(idx.(swap_key)) then
+                                    swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
+                                fi;
+                            od;
+                        fi;
                     fi;
 
                     if BURNSIDE_M2 = 0 or h2idx > h1_orb_idx then
@@ -2699,13 +2656,21 @@ for group_idx in [1..Length(GROUPS)] do
         Print("    [t+", Runtime() - job_t0, "ms] starting H1xH2 loop: ",
               Length(H1DATA_LIST), " x ", Length(H2DATA),
               " = ", n_pairs_total, " pairs\n");
+        # Optimization (4) 2026-04-28: precompute shifted RIGHT once per j.
+        if BURNSIDE_M2 = 0 then
+            H2_SHIFTED := List(H2DATA, hd -> hd.H^shift_R);
+        fi;
         for i in [1..Length(H1DATA_LIST)] do
             H1data_j := H1DATA_LIST[i];
             H1_j := H1data_j.H;
             if BURNSIDE_M2 = 1 then H2DATA[1] := H1data_j; fi;
             for j in [1..Length(H2DATA)] do
                 H2data_j := H2DATA[j];
-                H2_j := H2data_j.H^shift_R;
+                if BURNSIDE_M2 = 0 then
+                    H2_j := H2_SHIFTED[j];
+                else
+                    H2_j := H2data_j.H^shift_R;
+                fi;
                 res_pair := ProcessPairBatch(H1data_j, H2data_j, H1_j, H2_j);
                 TOTAL_ORB := TOTAL_ORB + res_pair.orbits;
                 TOTAL_FIX := TOTAL_FIX + res_pair.swap_fixed;
