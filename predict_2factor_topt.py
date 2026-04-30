@@ -351,6 +351,12 @@ SafeGroup := function(gens, default_amb)
     return Group(gens);
 end;
 
+# Subgroup helper that handles empty A_gens (used by opt 6 DoubleCosets path).
+SafeSub := function(G, gens)
+    if Length(gens) = 0 then return TrivialSubgroup(G); fi;
+    return Subgroup(G, gens);
+end;
+
 # Goursat fiber product builder (from lifting_algorithm.g).
 if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
 
@@ -1097,6 +1103,11 @@ end;
 SafeGroup := function(gens, default_amb)
     if Length(gens) = 0 then return TrivialSubgroup(default_amb); fi;
     return Group(gens);
+end;
+
+SafeSub := function(G, gens)
+    if Length(gens) = 0 then return TrivialSubgroup(G); fi;
+    return Subgroup(G, gens);
 end;
 
 ReconstructHData := function(entry, S_M)
@@ -1893,6 +1904,11 @@ end;
 SafeGroup := function(gens, default_amb)
     if Length(gens) = 0 then return TrivialSubgroup(default_amb); fi;
     return Group(gens);
+end;
+
+SafeSub := function(G, gens)
+    if Length(gens) = 0 then return TrivialSubgroup(G); fi;
+    return Subgroup(G, gens);
 end;
 
 ReconstructHData := function(entry, S_M)
