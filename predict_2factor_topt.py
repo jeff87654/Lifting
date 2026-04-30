@@ -963,15 +963,12 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                 # objects which DoubleCosets / Subgroup may not normalize, leading
                 # to over-counted orbits.  Convert each to a direct
                 # GroupHomomorphismByImagesNC by evaluating on Q's generators.
-                gensQ := GeneratorsOfGroup(h1orb.Q);
-                A2_in_h1_gens := List(h2orb.A_gens, function(b)
-                    local comp, hom;
-                    comp := InverseGeneralMapping(isoTH) * b * isoTH;
-                    hom := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
-                        gensQ, List(gensQ, q -> Image(comp, q)));
-                    SetIsBijective(hom, true);
-                    return hom;
-                end);
+                # Use GAP's InducedAutomorphism to transport b ∈ Aut(h2.Q)
+                # to Aut(h1.Q) via isoTH.  Returns a native group automorphism
+                # of h1.Q (not a CompositionMapping or generic homomorphism),
+                # which Subgroup() and DoubleCosets() recognize correctly.
+                A2_in_h1_gens := List(h2orb.A_gens,
+                    b -> InducedAutomorphism(isoTH, b));
                 A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
                 dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
                 n_orb := Length(dcs);
@@ -1751,16 +1748,9 @@ for job_idx in [1..Length(JOBS)] do
                     # Optimization (6) 2026-04-29: DoubleCosets replaces BFS.
                     # See ProcessPair (GAP_DRIVER) for the derivation.
                     A1 := SafeSub(h1orb.AutQ, h1orb.A_gens);
-                    # Reify A2_in_h1 generators: see ProcessPair for rationale.
-                    gensQ := GeneratorsOfGroup(h1orb.Q);
-                    A2_in_h1_gens := List(h2orb.A_gens, function(b)
-                        local comp, hom;
-                        comp := InverseGeneralMapping(isoTH) * b * isoTH;
-                        hom := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
-                            gensQ, List(gensQ, q -> Image(comp, q)));
-                        SetIsBijective(hom, true);
-                        return hom;
-                    end);
+                    # Use InducedAutomorphism to transport b to Aut(h1.Q).
+                    A2_in_h1_gens := List(h2orb.A_gens,
+                        b -> InducedAutomorphism(isoTH, b));
                     A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
                     dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
                     n_orb := Length(dcs);
@@ -2565,16 +2555,9 @@ for group_idx in [1..Length(GROUPS)] do
                         # Optimization (6) 2026-04-29: DoubleCosets replaces BFS.
                         # See ProcessPair (GAP_DRIVER) for the derivation.
                         A1 := SafeSub(h1orb.AutQ, h1orb.A_gens);
-                        # Reify A2_in_h1 generators: see ProcessPair for rationale.
-                        gensQ := GeneratorsOfGroup(h1orb.Q);
-                        A2_in_h1_gens := List(h2orb.A_gens, function(b)
-                            local comp, hom;
-                            comp := InverseGeneralMapping(isoTH) * b * isoTH;
-                            hom := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
-                                gensQ, List(gensQ, q -> Image(comp, q)));
-                            SetIsBijective(hom, true);
-                            return hom;
-                        end);
+                        # Use InducedAutomorphism to transport b to Aut(h1.Q).
+                        A2_in_h1_gens := List(h2orb.A_gens,
+                            b -> InducedAutomorphism(isoTH, b));
                         A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
                         dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
                         n_orb := Length(dcs);
