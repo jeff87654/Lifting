@@ -631,6 +631,13 @@ end;
 
 SaveHCacheList := function(path, h_cache)
     local tmp;
+    # Write-once guard: H_CACHE content is deterministic for a given path,
+    # so if a valid cache already exists (written by another worker),
+    # skip the rewrite.  Avoids the Cygwin/Windows race where mv -f falls
+    # back to unlink+create when the destination is held open by a
+    # concurrent reader, leaving a transient gap during which the reader's
+    # Read() fails with "file must exist".
+    if IsValidCacheFile(path) then return; fi;
     # Atomic write: PrintTo to a .tmp file, then `mv` to the final path.
     # Prevents corrupt-cache leftovers if the process is killed mid-write.
     # Unique tmp filename per call: prevents two GAP workers from clobbering
@@ -1395,6 +1402,13 @@ end;
 
 SaveHCacheList := function(path, h_cache)
     local tmp;
+    # Write-once guard: H_CACHE content is deterministic for a given path,
+    # so if a valid cache already exists (written by another worker),
+    # skip the rewrite.  Avoids the Cygwin/Windows race where mv -f falls
+    # back to unlink+create when the destination is held open by a
+    # concurrent reader, leaving a transient gap during which the reader's
+    # Read() fails with "file must exist".
+    if IsValidCacheFile(path) then return; fi;
     # Atomic write: PrintTo to a .tmp file, then `mv` to the final path.
     # Prevents corrupt-cache leftovers if the process is killed mid-write.
     # Unique tmp filename per call: prevents two GAP workers from clobbering
@@ -2221,6 +2235,13 @@ end;
 
 SaveHCacheList := function(path, h_cache)
     local tmp;
+    # Write-once guard: H_CACHE content is deterministic for a given path,
+    # so if a valid cache already exists (written by another worker),
+    # skip the rewrite.  Avoids the Cygwin/Windows race where mv -f falls
+    # back to unlink+create when the destination is held open by a
+    # concurrent reader, leaving a transient gap during which the reader's
+    # Read() fails with "file must exist".
+    if IsValidCacheFile(path) then return; fi;
     # Atomic write: PrintTo to a .tmp file, then `mv` to the final path.
     # Prevents corrupt-cache leftovers if the process is killed mid-write.
     # Unique tmp filename per call: prevents two GAP workers from clobbering
