@@ -368,6 +368,12 @@ def main():
                     help="LEFT sources with > this many deduped classes always run as their "
                          "own standalone batch (one fresh GAP per heavy LEFT) regardless of "
                          "super-batching, to avoid GAP runtime degradation on long jobs")
+    ap.add_argument("--overlap-next-n", type=int, default=1,
+                    help="opt 7 (2026-04-29): when S_n's queue size drops below worker count, "
+                         "pre-dispatch S_(n+1) tasks to the freed workers.  By the FPF argument "
+                         "(every factor of an S_(n+1) FPF combo has degree >= 2 -> m_left <= n-1), "
+                         "S_(n+1) is fully independent of S_n's H_CACHEs.  Hard guard: never "
+                         "pre-dispatch S_(n+2) before S_n is fully drained.  Set to 0 to disable.")
     args = ap.parse_args()
 
     sn_out = Path(args.out)
@@ -386,22 +392,18 @@ def main():
     num_transitive = get_num_transitive_groups(args.n_max, sn_out)
 
     summary = {"per_n": {}, "started": time.strftime("%Y-%m-%d %H:%M:%S")}
-    for n in range(args.n_min, args.n_max + 1):
-        # Reverse partition order: smaller first-part partitions like
-        # [4,4,4,2,2] are typically heavier (more combos, more complex
-        # cluster structure) than [n] or [n-2, 2].  Dispatching heavier
-        # partitions first lets the worker pool drain the long tail early,
-        # so workers stay busy instead of idling at the end on a slow task.
+
+    # ---- Per-n preparation: builds task list, runs bootstrap, returns state.
+    # Reverse partition order: smaller first-part partitions like [4,4,4,2,2]
+    # are typically heavier (more combos, more complex cluster structure) than
+    # [n] or [n-2, 2].  Dispatching heavier partitions first lets the worker
+    # pool drain the long tail early, so workers stay busy at the end.
+    def prepare_n(n):
         partitions = list(reversed(fpf_partitions(n)))
-        n_combos = 0
-        n_fpf = 0
-        n_seconds = 0.0
         n_dir = sn_out / str(n)
         n_dir.mkdir(exist_ok=True)
         bootstrap_entries = []
-        per_combo_results = []
 
-        # Pre-collect bootstrap entries for batching.
         n_invalid_skipped = 0
         for partition in partitions:
             part_dir = n_dir / part_dirname(partition)
@@ -411,7 +413,6 @@ def main():
                 if output_path.exists() and not args.force:
                     if is_complete_combo_file(output_path):
                         continue
-                    # Truncated/inconsistent file: delete and re-attempt.
                     n_invalid_skipped += 1
                     output_path.unlink()
                 if route(combo) == "bootstrap":
@@ -420,7 +421,6 @@ def main():
         if n_invalid_skipped > 0:
             print(f"[n={n}] purged {n_invalid_skipped} invalid/truncated combo files; will recompute")
 
-        # Run batched bootstrap.
         n_dispatch_t0 = time.time()
         if bootstrap_entries:
             print(f"[n={n}] bootstrapping {len(bootstrap_entries)} single-block combos...")
@@ -428,16 +428,11 @@ def main():
             run_bootstrap_batch(bootstrap_entries, pred_tmp / f"bootstrap_n{n}")
             print(f"  bootstrap done in {time.time()-t0:.1f}s")
 
-        # Group non-bootstrap, non-c2_fast combos by LEFT source path so
-        # predict_2factor_topt.py can batch them in a single GAP session.  C_2 fast
-        # path and Wreath-RA combos remain per-combo.
-        # Group key: (mode_for_predict_2factor, left_combo_tuple)
         from predict_2factor_topt import resolve_inputs as _resolve_inputs
-        batch_groups = {}     # (left_combo) -> list of (combo, mode, output_path, partition)
-        left_m_for_combo = {} # left_combo -> m_left (for heavy-LEFT detection)
-        c2_combos = []        # list of (combo, output_path, partition)
-        wreath_combos = []    # list of (combo, output_path, partition)
-
+        batch_groups = {}
+        left_m_for_combo = {}
+        c2_combos = []
+        wreath_combos = []
         for partition in partitions:
             part_dir = n_dir / part_dirname(partition)
             for combo in combos_for_partition(partition, num_transitive):
@@ -445,17 +440,16 @@ def main():
                 if output_path.exists() and not args.force:
                     if is_complete_combo_file(output_path):
                         continue
-                    output_path.unlink()   # truncated; will be recomputed
+                    output_path.unlink()
                 rt = route(combo)
                 if rt == "bootstrap":
-                    continue   # already done above
+                    continue
                 if rt == "c2_fast":
                     c2_combos.append((combo, output_path, partition))
                     continue
                 if rt == "wreath_ra":
                     wreath_combos.append((combo, output_path, partition))
                     continue
-                # 2-factor route: distinguished, holt_split, or burnside_m2
                 try:
                     inputs = _resolve_inputs(combo, rt)
                 except Exception as e:
@@ -465,27 +459,15 @@ def main():
                 batch_groups.setdefault(key, []).append((combo, rt, output_path, partition))
                 left_m_for_combo[key] = inputs["m_left"]
 
-        # ---- Build task list (parallelizable) ----
-        tasks = []   # list of (kind, key_for_msg, cmd, timeout)
-
-        # 2-factor batch tasks.  When --super-batch-jobs > 1, pack small batch
-        # groups into super-batches that share GAP startup.  Big groups (with
-        # >= super_batch_jobs/2 jobs each) stay as standalone batches since
-        # they already amortize startup well.
+        tasks = []
         sb_jobs = args.super_batch_jobs
         sb_threshold = max(1, sb_jobs // 2)
-        # Group count cap: only the job-count cap (sb_jobs) is enforced.
-        # Previously capped at args.workers, which artificially limited
-        # amortization of GAP startup.
-
-        super_pack_groups = []
-        super_pack_total_jobs = 0
-        super_pack_idx = 0
+        super_pack_state = {"groups": [], "total_jobs": 0, "idx": 0}
 
         def flush_super_pack():
-            nonlocal super_pack_groups, super_pack_total_jobs, super_pack_idx
-            if not super_pack_groups: return
-            sb_dir = pred_tmp / f"super_n{n}_sp{super_pack_idx}"
+            if not super_pack_state["groups"]: return
+            spi = super_pack_state["idx"]
+            sb_dir = pred_tmp / f"super_n{n}_sp{spi}"
             sb_dir.mkdir(parents=True, exist_ok=True)
             sb_json = sb_dir / "super.json"
             sb_json.write_text(json.dumps({
@@ -493,54 +475,48 @@ def main():
                     {"left_combo": list(lc),
                      "jobs": [{"combo": list(c), "mode": m, "output_path": str(o)}
                               for (c, m, o, _) in jobs]}
-                    for lc, jobs in super_pack_groups
+                    for lc, jobs in super_pack_state["groups"]
                 ]
             }), encoding="utf-8")
+            tj = super_pack_state["total_jobs"]
             if args.combo_timeout == 0:
-                inner_timeout = 0   # 0 = no timeout
+                inner_timeout = 0
                 outer_timeout = None
             else:
-                inner_timeout = args.combo_timeout * super_pack_total_jobs + 120
-                outer_timeout = args.combo_timeout * super_pack_total_jobs + 240
+                inner_timeout = args.combo_timeout * tj + 120
+                outer_timeout = args.combo_timeout * tj + 240
             cmd = [sys.executable, "predict_2factor_topt.py",
                    "--super-batch", str(sb_json), "--force",
                    "--timeout", str(inner_timeout)]
-            label = f"super_{super_pack_idx}({len(super_pack_groups)}grp,{super_pack_total_jobs}j)"
+            label = f"n{n}_super_{spi}({len(super_pack_state['groups'])}grp,{tj}j)"
             tasks.append(("super_batch", label, cmd, outer_timeout))
-            super_pack_idx += 1
-            super_pack_groups = []
-            super_pack_total_jobs = 0
+            super_pack_state["idx"] = spi + 1
+            super_pack_state["groups"] = []
+            super_pack_state["total_jobs"] = 0
 
         n_heavy_routed = 0
         for left_combo, group_jobs in batch_groups.items():
             n_jobs = len(group_jobs)
-            # Heavy LEFT (large class count) always gets standalone batch:
-            # GAP runtime degradation makes long-lived workers ~25x slower per
-            # fp after even 30 min, so each heavy LEFT deserves a fresh GAP.
             m_left = left_m_for_combo.get(left_combo)
             lsize = left_class_count(left_combo, m_left, sn_out) if m_left else 0
             heavy = lsize > args.left_heavy_threshold
             if heavy:
                 n_heavy_routed += 1
             if not heavy and sb_jobs > 1 and n_jobs <= sb_threshold:
-                # Pack into super-batch.
-                super_pack_groups.append((left_combo, group_jobs))
-                super_pack_total_jobs += n_jobs
-                # Flush when the job count cap is reached.
-                if super_pack_total_jobs >= sb_jobs:
+                super_pack_state["groups"].append((left_combo, group_jobs))
+                super_pack_state["total_jobs"] += n_jobs
+                if super_pack_state["total_jobs"] >= sb_jobs:
                     flush_super_pack()
                 continue
-            # Heavy LEFT, big group, or no super-batching: standalone batch.
             batch_dir = pred_tmp / f"batch_n{n}_{combo_filename(left_combo)}"
             batch_dir.mkdir(parents=True, exist_ok=True)
             jobs_json = batch_dir / "jobs.json"
             jobs_json.write_text(json.dumps([
-                {"combo": list(combo), "mode": mode,
-                 "output_path": str(out)}
+                {"combo": list(combo), "mode": mode, "output_path": str(out)}
                 for combo, mode, out, _ in group_jobs
             ]), encoding="utf-8")
             if args.combo_timeout == 0:
-                inner_timeout = 0   # 0 = no timeout
+                inner_timeout = 0
                 outer_timeout = None
             else:
                 inner_timeout = args.combo_timeout * n_jobs
@@ -548,52 +524,45 @@ def main():
             cmd = [sys.executable, "predict_2factor_topt.py",
                    "--batch", str(jobs_json), "--force",
                    "--timeout", str(inner_timeout)]
-            tasks.append(("batch", combo_filename(left_combo), cmd, outer_timeout))
+            tasks.append(("batch", f"n{n}_{combo_filename(left_combo)}",
+                          cmd, outer_timeout))
         flush_super_pack()
 
         if args.combo_timeout == 0:
-            single_inner_timeout = 0   # 0 = no timeout
+            single_inner_timeout = 0
             single_outer_timeout = None
         else:
             single_inner_timeout = args.combo_timeout
             single_outer_timeout = args.combo_timeout + 60
 
-        # C_2 fast tasks: one per combo.
         for combo, output_path, partition in c2_combos:
             cmd = [sys.executable, "run_c2_fast_path.py",
                    "--combo", combo_filename(combo),
                    "--output-path", str(output_path),
                    "--timeout", str(single_inner_timeout)]
-            tasks.append(("c2", combo_filename(combo), cmd, single_outer_timeout))
-
-        # Wreath-RA tasks: one per combo.
+            tasks.append(("c2", f"n{n}_{combo_filename(combo)}",
+                          cmd, single_outer_timeout))
         for combo, output_path, partition in wreath_combos:
             cmd = [sys.executable, "predict_full_general_wreath.py",
                    "--combo", combo_filename(combo),
                    "--target-n", str(n),
                    "--output-path", str(output_path),
                    "--timeout", str(single_inner_timeout)]
-            tasks.append(("wreath", combo_filename(combo), cmd, single_outer_timeout))
+            tasks.append(("wreath", f"n{n}_{combo_filename(combo)}",
+                          cmd, single_outer_timeout))
 
-        # Reorder: dispatch wreath tasks first (each is single-threaded
-        # GAP work that can take 30+ minutes — the long tail).  Then c2,
-        # then 2-factor batches.  Stable sort preserves intra-kind order.
+        # Wreath/c2 first (long single-task tails), then 2-factor batches.
         tasks.sort(key=lambda t: {"wreath": 0, "c2": 1,
                                    "super_batch": 2, "batch": 2}.get(t[0], 3))
 
         # Late-stage rebalance: if we have fewer tasks than workers, split the
         # largest multi-group super-batches in half until we have enough or
-        # all super-batches are singleton-group.  Keeps all workers busy when
-        # there are heavy long-tail tasks left.
+        # all super-batches are singleton-group.
         def _split_largest_super_batch():
-            """Pop the super-batch with the most groups; split it in half;
-            re-add as two new super_batch tasks.  Returns True if split."""
             sb_indices = [i for i, t in enumerate(tasks) if t[0] == "super_batch"]
             if not sb_indices:
                 return False
-            # Find sb with most groups.
             def n_groups(i):
-                # Reread the sb_json file — cmd holds the path.
                 cmd = tasks[i][2]
                 sb_json_path = cmd[cmd.index("--super-batch") + 1]
                 try:
@@ -610,12 +579,12 @@ def main():
                 return False
             mid = len(groups) // 2
             left_groups, right_groups = groups[:mid], groups[mid:]
-            # Write two new sb_json files.
-            sb_dir_a = pred_tmp / f"super_n{n}_sp{super_pack_idx}"
+            spi = super_pack_state["idx"]
+            sb_dir_a = pred_tmp / f"super_n{n}_sp{spi}"
             sb_dir_a.mkdir(parents=True, exist_ok=True)
             sb_json_a = sb_dir_a / "super.json"
             sb_json_a.write_text(json.dumps({"groups": left_groups}), encoding="utf-8")
-            sb_dir_b = pred_tmp / f"super_n{n}_sp{super_pack_idx + 1}"
+            sb_dir_b = pred_tmp / f"super_n{n}_sp{spi + 1}"
             sb_dir_b.mkdir(parents=True, exist_ok=True)
             sb_json_b = sb_dir_b / "super.json"
             sb_json_b.write_text(json.dumps({"groups": right_groups}), encoding="utf-8")
@@ -624,13 +593,13 @@ def main():
             inner_to = 0 if args.combo_timeout == 0 else args.combo_timeout * max(n_jobs_a, n_jobs_b) + 120
             outer_to = None if args.combo_timeout == 0 else args.combo_timeout * max(n_jobs_a, n_jobs_b) + 240
             new_a = ("super_batch",
-                     f"super_{super_pack_idx}({len(left_groups)}grp,{n_jobs_a}j,split)",
+                     f"n{n}_super_{spi}({len(left_groups)}grp,{n_jobs_a}j,split)",
                      [sys.executable, "predict_2factor_topt.py",
                       "--super-batch", str(sb_json_a), "--force",
                       "--timeout", str(inner_to)],
                      outer_to)
             new_b = ("super_batch",
-                     f"super_{super_pack_idx + 1}({len(right_groups)}grp,{n_jobs_b}j,split)",
+                     f"n{n}_super_{spi + 1}({len(right_groups)}grp,{n_jobs_b}j,split)",
                      [sys.executable, "predict_2factor_topt.py",
                       "--super-batch", str(sb_json_b), "--force",
                       "--timeout", str(inner_to)],
@@ -640,81 +609,85 @@ def main():
             tasks.append(new_b)
             return True
 
-        # Now re-bind super_pack_idx for the rebalance loop.
-        # (super_pack_idx grew during the per-LEFT pack loop; bump it to leave
-        # room for the new split tasks.)
         rebalance_iters = 0
         while len(tasks) < args.workers and rebalance_iters < args.workers * 4:
             if not _split_largest_super_batch():
                 break
-            super_pack_idx += 2
+            super_pack_state["idx"] += 2
             rebalance_iters += 1
         if rebalance_iters > 0:
             print(f"[n={n}] rebalanced: split {rebalance_iters} super-batch(es) "
                   f"to keep all {args.workers} workers busy")
 
-        if not tasks:
-            pass  # nothing to do this n
-        else:
+        if tasks:
             print(f"[n={n}] dispatching {len(tasks)} tasks "
                   f"(batches={len(batch_groups)}, c2={len(c2_combos)}, "
                   f"wreath={len(wreath_combos)}, heavy_left={n_heavy_routed} "
-                  f"@>{args.left_heavy_threshold} classes) on {args.workers} workers")
-            from concurrent.futures import ProcessPoolExecutor, as_completed
-            n_done = 0
-            with ProcessPoolExecutor(max_workers=args.workers) as pool:
-                futures = {pool.submit(_run_subprocess_task, kind, key, cmd, timeout): (kind, key)
-                           for kind, key, cmd, timeout in tasks}
-                for f in as_completed(futures):
-                    kind, key = futures[f]
-                    try:
-                        result = f.result()
-                    except Exception as e:
-                        print(f"  [n={n}] EXCEPTION ({kind}) {key}: {e}")
-                        continue
-                    n_done += 1
-                    if kind in ("batch", "super_batch"):
-                        if "error" in result and "results" not in result:
-                            err_msg = f"  [n={n}] {kind} OUTER ERROR {key}: {result['error']}"
-                            stderr_tail = result.get("stderr", "")
-                            stdout_tail = result.get("stdout", "")
-                            if stderr_tail:
-                                err_msg += f"\n    stderr: {stderr_tail[-300:]!r}"
-                            if stdout_tail:
-                                err_msg += f"\n    stdout: {stdout_tail[-300:]!r}"
-                            print(err_msg)
-                        for rj in result.get("results", []):
-                            n_combos += 1
-                            if "error" in rj:
-                                print(f"  [n={n}] {kind} ERROR {key}: {rj['error']}")
-                                continue
-                            n_fpf += rj.get("predicted", 0)
-                            n_seconds += rj.get("elapsed_s", 0)
-                            per_combo_results.append({"n": n, **rj})
-                    else:
-                        # c2 or wreath: single result
-                        n_combos += 1
-                        if "error" in result:
-                            err_msg = f"  [n={n}] {kind} ERROR {key}: {result['error']}"
-                            stderr_tail = result.get("stderr", "")
-                            stdout_tail = result.get("stdout", "")
-                            if stderr_tail:
-                                err_msg += f"\n    stderr: {stderr_tail[-300:]!r}"
-                            if stdout_tail:
-                                err_msg += f"\n    stdout: {stdout_tail[-300:]!r}"
-                            print(err_msg)
-                            continue
-                        n_fpf += result.get("predicted", 0)
-                        n_seconds += result.get("elapsed_s", 0)
-                        per_combo_results.append({"n": n, "kind": kind,
-                                                   "key": key, **result})
-                    if n_done % 25 == 0:
-                        print(f"  [n={n}] {n_done}/{len(tasks)} tasks done "
-                              f"(elapsed={time.time()-n_dispatch_t0:.0f}s)")
+                  f"@>{args.left_heavy_threshold} classes)")
 
+        return {
+            "n": n,
+            "tasks": tasks,
+            "tasks_total": len(tasks),
+            "tasks_remaining": len(tasks),
+            "n_done": 0,
+            "n_combos": 0,
+            "n_fpf": 0,
+            "n_seconds": 0.0,
+            "n_dispatch_t0": n_dispatch_t0,
+            "per_combo_results": [],
+            "partitions": partitions,
+            "n_dir": n_dir,
+        }
+
+    # ---- Per-completion handler ----
+    def handle_completion(state, kind, key, result):
+        n = state["n"]
+        if kind in ("batch", "super_batch"):
+            if "error" in result and "results" not in result:
+                err_msg = f"  [n={n}] {kind} OUTER ERROR {key}: {result['error']}"
+                stderr_tail = result.get("stderr", "")
+                stdout_tail = result.get("stdout", "")
+                if stderr_tail:
+                    err_msg += f"\n    stderr: {stderr_tail[-300:]!r}"
+                if stdout_tail:
+                    err_msg += f"\n    stdout: {stdout_tail[-300:]!r}"
+                print(err_msg)
+            for rj in result.get("results", []):
+                state["n_combos"] += 1
+                if "error" in rj:
+                    print(f"  [n={n}] {kind} ERROR {key}: {rj['error']}")
+                    continue
+                state["n_fpf"] += rj.get("predicted", 0)
+                state["n_seconds"] += rj.get("elapsed_s", 0)
+                state["per_combo_results"].append({"n": n, **rj})
+        else:
+            state["n_combos"] += 1
+            if "error" in result:
+                err_msg = f"  [n={n}] {kind} ERROR {key}: {result['error']}"
+                stderr_tail = result.get("stderr", "")
+                stdout_tail = result.get("stdout", "")
+                if stderr_tail:
+                    err_msg += f"\n    stderr: {stderr_tail[-300:]!r}"
+                if stdout_tail:
+                    err_msg += f"\n    stdout: {stdout_tail[-300:]!r}"
+                print(err_msg)
+                return
+            state["n_fpf"] += result.get("predicted", 0)
+            state["n_seconds"] += result.get("elapsed_s", 0)
+            state["per_combo_results"].append({"n": n, "kind": kind,
+                                                "key": key, **result})
+        state["n_done"] += 1
+        if state["n_done"] % 25 == 0:
+            print(f"  [n={n}] {state['n_done']}/{state['tasks_total']} tasks done "
+                  f"(elapsed={time.time()-state['n_dispatch_t0']:.0f}s)")
+
+    # ---- Per-n finalization ----
+    def finalize_n(state):
+        n = state["n"]
         # Re-count bootstrap files (they were skipped from per-combo loop).
-        for partition in partitions:
-            part_dir = n_dir / part_dirname(partition)
+        for partition in state["partitions"]:
+            part_dir = state["n_dir"] / part_dirname(partition)
             for combo in combos_for_partition(partition, num_transitive):
                 if route(combo) != "bootstrap": continue
                 output_path = part_dir / f"{combo_filename(combo)}.g"
@@ -722,12 +695,13 @@ def main():
                     m = re.search(r"^# deduped:\s*(\d+)",
                                    output_path.read_text(encoding="utf-8"),
                                    re.MULTILINE)
-                    n_combos += 1
-                    n_fpf += int(m.group(1)) if m else 0
+                    state["n_combos"] += 1
+                    state["n_fpf"] += int(m.group(1)) if m else 0
 
-        # Compute total subgroups for n: FPF(n) + inherited from S_(n-1).
-        # Inherited count = A000638(n-1) (every S_(n-1)-class extends).
-        wall_s = time.time() - n_dispatch_t0
+        wall_s = time.time() - state["n_dispatch_t0"]
+        n_combos = state["n_combos"]
+        n_fpf = state["n_fpf"]
+        n_seconds = state["n_seconds"]
         if n in A000638 and n - 1 in A000638:
             expected_fpf = A000638[n] - A000638[n - 1]
             ok = (n_fpf == expected_fpf)
@@ -738,12 +712,10 @@ def main():
             print(f"[n={n}] FPF total: {n_fpf}  (no OEIS reference)  "
                   f"(gap_cpu={n_seconds:.1f}s wall={wall_s:.1f}s, {n_combos} combos)")
 
-        # Dump per-task timing for offline analysis
         tasks_path = sn_out / f"_n{n}_tasks.json"
         with open(tasks_path, "w", encoding="utf-8") as f:
-            json.dump(per_combo_results, f)
-        # Print top-10 slowest tasks (combos by elapsed_s)
-        slow = sorted(per_combo_results,
+            json.dump(state["per_combo_results"], f)
+        slow = sorted(state["per_combo_results"],
                       key=lambda r: r.get("elapsed_s", 0), reverse=True)[:10]
         if slow and slow[0].get("elapsed_s", 0) >= 1.0:
             print(f"  [n={n}] top-10 slowest tasks:")
@@ -754,9 +726,8 @@ def main():
                 mode = r.get("mode", r.get("kind", "?"))
                 pred = r.get("predicted", "?")
                 print(f"    {e:7.2f}s {mode:>16}  predicted={pred}  combo={combo}")
-        # Aggregate per route
         by_kind = {}
-        for r in per_combo_results:
+        for r in state["per_combo_results"]:
             k = r.get("kind", r.get("mode", "unknown"))
             by_kind.setdefault(k, [0, 0.0])
             by_kind[k][0] += 1
@@ -773,6 +744,80 @@ def main():
             "wall_s": wall_s,
             "expected_fpf": (A000638[n] - A000638[n-1]) if (n in A000638 and n-1 in A000638) else None,
         }
+
+    # ---- Multi-n dispatch loop with optional overlap (opt 7).
+    # FPF argument: any S_(n+1) FPF combo has every factor of degree >= 2,
+    # so m_left <= n-1; H_CACHE deps are S_(n-1)-and-earlier, all done before
+    # S_n started.  S_(n+1) is therefore independent of S_n's H_CACHEs and
+    # can run concurrently with S_n stragglers.  S_(n+2) is NOT safe to
+    # pre-dispatch (its m_left can equal n, whose H_CACHE is still being built
+    # by S_n stragglers), so the horizon is hard-capped at current_n + 1.
+    from concurrent.futures import ProcessPoolExecutor, FIRST_COMPLETED, wait
+
+    states = {}      # n -> state dict
+    in_flight = {}   # future -> (n, kind, key)
+
+    def submit_n(n, pool):
+        if n not in states:
+            states[n] = prepare_n(n)
+        st = states[n]
+        for kind, key, cmd, timeout in st["tasks"]:
+            f = pool.submit(_run_subprocess_task, kind, key, cmd, timeout)
+            in_flight[f] = (n, kind, key)
+
+    current_n = args.n_min
+    horizon_n = args.n_min - 1   # highest n with tasks dispatched
+
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        # Prime: submit current_n.  If it has 0 tasks (only bootstrap), finalize
+        # and advance until we find a non-empty n or run out.
+        while current_n <= args.n_max and current_n > horizon_n:
+            submit_n(current_n, pool)
+            horizon_n = current_n
+            if states[current_n]["tasks_total"] == 0:
+                finalize_n(states[current_n])
+                current_n += 1
+
+        while current_n <= args.n_max:
+            if not in_flight:
+                # Defensive: shouldn't happen if we keep priming.
+                break
+            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for f in done:
+                n_done, kind, key = in_flight.pop(f)
+                try:
+                    result = f.result()
+                except Exception as e:
+                    print(f"  [n={n_done}] EXCEPTION ({kind}) {key}: {e}")
+                    states[n_done]["tasks_remaining"] -= 1
+                    continue
+                handle_completion(states[n_done], kind, key, result)
+                states[n_done]["tasks_remaining"] -= 1
+
+            # Advance current_n while drained, priming further n's as needed.
+            while (current_n <= args.n_max
+                   and states[current_n]["tasks_remaining"] == 0):
+                finalize_n(states[current_n])
+                current_n += 1
+                while current_n <= args.n_max and current_n > horizon_n:
+                    submit_n(current_n, pool)
+                    horizon_n = current_n
+                    if states[current_n]["tasks_total"] == 0:
+                        finalize_n(states[current_n])
+                        current_n += 1
+
+            # Opportunistic overlap: pre-dispatch n+1 when current_n queue is
+            # smaller than worker count.  Hard-capped at current_n + 1.
+            if (args.overlap_next_n
+                and current_n <= args.n_max
+                and current_n + 1 <= args.n_max
+                and horizon_n == current_n):
+                remaining = states[current_n]["tasks_remaining"]
+                if 0 < remaining < args.workers:
+                    print(f"[n={current_n+1}] overlap dispatch starting "
+                          f"(n={current_n} queue={remaining}, workers={args.workers})")
+                    submit_n(current_n + 1, pool)
+                    horizon_n = current_n + 1
 
     # Write summary
     (sn_out / "_build_summary.json").write_text(
