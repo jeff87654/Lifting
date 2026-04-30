@@ -982,8 +982,16 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                     # (where phi = α' o isoTH) this is α'' = isoTH^-1 o Rep(dcs[i])^-1
                     # o isoTH^-1.  In GAP composition: tinv * Rep^-1 * tinv.
                     tinv := InverseGeneralMapping(isoTH);
+                    gensQ := GeneratorsOfGroup(h1orb.Q);
                     for i in [1..n_orb] do
+                        # g_swap is initially a CompositionMapping which
+                        # DoubleCoset.in does not recognize as an h1.AutQ
+                        # element.  Reify it as GroupHomomorphismByImagesNC
+                        # by evaluating on Q's generators.
                         g_swap := tinv * InverseGeneralMapping(Representative(dcs[i])) * tinv;
+                        g_swap := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
+                            gensQ, List(gensQ, q -> Image(g_swap, q)));
+                        SetIsBijective(g_swap, true);
                         swap_orb_id_arr[i] :=
                             PositionProperty(dcs, dc -> g_swap in dc);
                     od;
@@ -1753,8 +1761,16 @@ for job_idx in [1..Length(JOBS)] do
                         # Find which double coset contains the swap of each orbit rep.
                         # See ProcessPair (GAP_DRIVER) for the derivation.
                         tinv := InverseGeneralMapping(isoTH);
+                        gensQ := GeneratorsOfGroup(h1orb.Q);
                         for i in [1..n_orb] do
+                            # g_swap is initially a CompositionMapping which
+                            # DoubleCoset.in does not recognize as an h1.AutQ
+                            # element.  Reify it as GroupHomomorphismByImagesNC
+                            # by evaluating on Q's generators.
                             g_swap := tinv * InverseGeneralMapping(Representative(dcs[i])) * tinv;
+                            g_swap := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
+                                gensQ, List(gensQ, q -> Image(g_swap, q)));
+                            SetIsBijective(g_swap, true);
                             swap_orb_id_arr[i] :=
                                 PositionProperty(dcs, dc -> g_swap in dc);
                         od;
@@ -2549,8 +2565,16 @@ for group_idx in [1..Length(GROUPS)] do
                             # Find which double coset contains the swap of each rep.
                             # See ProcessPair (GAP_DRIVER) for the derivation.
                             tinv := InverseGeneralMapping(isoTH);
+                            gensQ := GeneratorsOfGroup(h1orb.Q);
                             for i in [1..n_orb] do
+                                # g_swap is initially a CompositionMapping which
+                                # DoubleCoset.in does not recognize as an h1.AutQ
+                                # element.  Reify it as GroupHomomorphismByImagesNC
+                                # by evaluating on Q's generators.
                                 g_swap := tinv * InverseGeneralMapping(Representative(dcs[i])) * tinv;
+                                g_swap := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
+                                    gensQ, List(gensQ, q -> Image(g_swap, q)));
+                                SetIsBijective(g_swap, true);
                                 swap_orb_id_arr[i] :=
                                     PositionProperty(dcs, dc -> g_swap in dc);
                             od;
