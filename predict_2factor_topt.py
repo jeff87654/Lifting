@@ -351,6 +351,12 @@ SafeGroup := function(gens, default_amb)
     return Group(gens);
 end;
 
+# Subgroup helper that handles empty A_gens (used by opt 6 DoubleCosets path).
+SafeSub := function(G, gens)
+    if Length(gens) = 0 then return TrivialSubgroup(G); fi;
+    return Subgroup(G, gens);
+end;
+
 # Goursat fiber product builder (from lifting_algorithm.g).
 if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
 
@@ -858,7 +864,8 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
           alpha, beta, neighbor, nkey, k, fp, orbit_id, i, swap_phi,
           swap_key, swap_iso_idx, swap_orbit_id, h1, h2, H1, H2, n,
           h1_orb_idx, kh_a_eq_kt_b, gens_for_fp, orbit_reps_phi, h_0, t_0,
-          swap_orb_id_arr;
+          swap_orb_id_arr,
+          dcs, A1, A2_in_h1, A2_in_h1_gens, tinv, g_swap;
 
     H1 := H1data.H;
     H2 := ShiftToRight(H2data.H);   # only used if EMIT_GENS or BURNSIDE_M2
@@ -947,51 +954,34 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
             if h1orb.full_aut = true or h2orb.full_aut = true then
                 n_orb := 1;
                 orbit_reps_phi := [isoTH];
-                # idx, isos not built; not needed (no BFS, no swap-orbit lookup
-                # for n_orb=1 — handled in swap_orb_id_arr block below).
+                dcs := [];   # placeholder; not used in saturated branch
             else
-                isos := List(AsList(h2orb.AutQ), a -> a * isoTH);
-                n := Length(isos);
-                gensQ := GeneratorsOfGroup(h2orb.Q);
-                KeyOf := function(phi) return List(gensQ, q -> Image(phi, q)); end;
-                idx := rec();
-                for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
-                seen := ListWithIdenticalEntries(n, false);
-                orbit_id := ListWithIdenticalEntries(n, 0);
-                n_orb := 0;
-                orbit_reps_phi := [];
-                for i in [1..n] do
-                    if seen[i] then continue; fi;
-                    n_orb := n_orb + 1;
-                    Add(orbit_reps_phi, isos[i]);
-                    seen[i] := true;
-                    orbit_id[i] := n_orb;
-                    queue := [i];
-                    while Length(queue) > 0 do
-                        j := Remove(queue);
-                        phi := isos[j];
-                        for alpha in h1orb.A_gens do
-                            neighbor := phi * alpha;
-                            nkey := String(KeyOf(neighbor));
-                            if IsBound(idx.(nkey)) then
-                                k := idx.(nkey);
-                                if not seen[k] then
-                                    seen[k] := true; orbit_id[k] := n_orb; Add(queue, k);
-                                fi;
-                            fi;
-                        od;
-                        for beta in h2orb.A_gens do
-                            neighbor := InverseGeneralMapping(beta) * phi;
-                            nkey := String(KeyOf(neighbor));
-                            if IsBound(idx.(nkey)) then
-                                k := idx.(nkey);
-                                if not seen[k] then
-                                    seen[k] := true; orbit_id[k] := n_orb; Add(queue, k);
-                                fi;
-                            fi;
-                        od;
-                    od;
-                od;
+                # Optimization (6) 2026-04-29: DoubleCosets replaces BFS.
+                # Parametrize iso phi: h2.Q -> h1.Q as phi = α' o isoTH (standard
+                # math composition), α' in Aut(h1.Q).  The action α o phi o β^-1
+                # (α in A1 = <h1.A_gens>, β in A2 = <h2.A_gens>) becomes
+                # α' -> α α' β'^-1 with β' = isoTH o β o isoTH^-1 in Aut(h1.Q).
+                # Orbits = double cosets A1 \ Aut(h1.Q) / A2_in_h1.
+                # Bench-validated 5.4x avg, 22-68x on |Aut|>=1152 buckets, 0
+                # mismatches across 21,647 verified pairs.
+                A1 := SafeSub(h1orb.AutQ, h1orb.A_gens);
+                # Reify A2_in_h1 generators: the natural construction
+                # `InverseGeneralMapping(isoTH) * b * isoTH` produces CompositionMapping
+                # objects which DoubleCosets / Subgroup may not normalize, leading
+                # to over-counted orbits.  Convert each to a direct
+                # GroupHomomorphismByImagesNC by evaluating on Q's generators.
+                # Use GAP's InducedAutomorphism to transport b ∈ Aut(h2.Q)
+                # to Aut(h1.Q) via isoTH.  Returns a native group automorphism
+                # of h1.Q (not a CompositionMapping or generic homomorphism),
+                # which Subgroup() and DoubleCosets() recognize correctly.
+                A2_in_h1_gens := List(h2orb.A_gens,
+                    b -> InducedAutomorphism(isoTH, b));
+                A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
+                dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
+                n_orb := Length(dcs);
+                # GAP composition: f * g = "apply f first, then g" = standard g o f.
+                # Orbit rep phi_i = standard Rep(dcs[i]) o isoTH = GAP isoTH * Rep(dcs[i]).
+                orbit_reps_phi := List(dcs, dc -> isoTH * Representative(dc));
             fi;
             total := total + n_orb;
 
@@ -1003,13 +993,23 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                     # Optimization (1) shortcut: 1 orbit, trivially swap-fixed.
                     swap_orb_id_arr[1] := 1;
                 else
+                    # Find which double coset contains the swap of each orbit rep.
+                    # phi_i^-1 = standard isoTH^-1 o Rep(dcs[i])^-1.  In α'-coords
+                    # (where phi = α' o isoTH) this is α'' = isoTH^-1 o Rep(dcs[i])^-1
+                    # o isoTH^-1.  In GAP composition: tinv * Rep^-1 * tinv.
+                    tinv := InverseGeneralMapping(isoTH);
+                    gensQ := GeneratorsOfGroup(h1orb.Q);
                     for i in [1..n_orb] do
-                        phi := orbit_reps_phi[i];
-                        swap_phi := InverseGeneralMapping(phi);
-                        swap_key := String(KeyOf(swap_phi));
-                        if IsBound(idx.(swap_key)) then
-                            swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
-                        fi;
+                        # g_swap is initially a CompositionMapping which
+                        # DoubleCoset.in does not recognize as an h1.AutQ
+                        # element.  Reify it as GroupHomomorphismByImagesNC
+                        # by evaluating on Q's generators.
+                        g_swap := tinv * InverseGeneralMapping(Representative(dcs[i])) * tinv;
+                        g_swap := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
+                            gensQ, List(gensQ, q -> Image(g_swap, q)));
+                        SetIsBijective(g_swap, true);
+                        swap_orb_id_arr[i] :=
+                            PositionProperty(dcs, dc -> g_swap in dc);
                     od;
                 fi;
             fi;
@@ -1127,6 +1127,11 @@ end;
 SafeGroup := function(gens, default_amb)
     if Length(gens) = 0 then return TrivialSubgroup(default_amb); fi;
     return Group(gens);
+end;
+
+SafeSub := function(G, gens)
+    if Length(gens) = 0 then return TrivialSubgroup(G); fi;
+    return Subgroup(G, gens);
 end;
 
 ReconstructHData := function(entry, S_M)
@@ -1672,7 +1677,8 @@ for job_idx in [1..Length(JOBS)] do
               isos, n, gensQ, KeyOf, idx, seen, n_orb, queue, j, phi,
               alpha, beta, neighbor, nkey, k, fp, orbit_id, i, swap_phi,
               swap_key, swap_iso_idx, swap_orbit_id,
-              h1_orb_idx, orbit_reps_phi, h_0, t_0, swap_orb_id_arr;
+              h1_orb_idx, orbit_reps_phi, h_0, t_0, swap_orb_id_arr,
+              dcs, A1, A2_in_h1, A2_in_h1_gens, tinv, g_swap;
         total := 0; swap_fixed := 0;
         for h1_orb_idx in [1..Length(H1data.orbits)] do
             h1orb := H1data.orbits[h1_orb_idx];
@@ -1751,49 +1757,19 @@ for job_idx in [1..Length(JOBS)] do
                 if h1orb.full_aut = true or h2orb.full_aut = true then
                     n_orb := 1;
                     orbit_reps_phi := [isoTH];
+                    dcs := [];   # placeholder; not used in saturated branch
                 else
-                isos := List(AsList(h2orb.AutQ), a -> a * isoTH);
-                n := Length(isos);
-                gensQ := GeneratorsOfGroup(h2orb.Q);
-                KeyOf := function(phi) return List(gensQ, q -> Image(phi, q)); end;
-                idx := rec();
-                for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
-                seen := ListWithIdenticalEntries(n, false);
-                orbit_id := ListWithIdenticalEntries(n, 0);
-                n_orb := 0;
-                orbit_reps_phi := [];
-                for i in [1..n] do
-                    if seen[i] then continue; fi;
-                    n_orb := n_orb + 1;
-                    Add(orbit_reps_phi, isos[i]);
-                    seen[i] := true; orbit_id[i] := n_orb;
-                    queue := [i];
-                    while Length(queue) > 0 do
-                        j := Remove(queue);
-                        phi := isos[j];
-                        for alpha in h1orb.A_gens do
-                            neighbor := phi * alpha;
-                            nkey := String(KeyOf(neighbor));
-                            if IsBound(idx.(nkey)) then
-                                k := idx.(nkey);
-                                if not seen[k] then
-                                    seen[k] := true; orbit_id[k] := n_orb; Add(queue, k);
-                                fi;
-                            fi;
-                        od;
-                        for beta in h2orb.A_gens do
-                            neighbor := InverseGeneralMapping(beta) * phi;
-                            nkey := String(KeyOf(neighbor));
-                            if IsBound(idx.(nkey)) then
-                                k := idx.(nkey);
-                                if not seen[k] then
-                                    seen[k] := true; orbit_id[k] := n_orb; Add(queue, k);
-                                fi;
-                            fi;
-                        od;
-                    od;
-                od;
-                fi;   # end Aut-saturation shortcut else-branch
+                    # Optimization (6) 2026-04-29: DoubleCosets replaces BFS.
+                    # See ProcessPair (GAP_DRIVER) for the derivation.
+                    A1 := SafeSub(h1orb.AutQ, h1orb.A_gens);
+                    # Use InducedAutomorphism to transport b to Aut(h1.Q).
+                    A2_in_h1_gens := List(h2orb.A_gens,
+                        b -> InducedAutomorphism(isoTH, b));
+                    A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
+                    dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
+                    n_orb := Length(dcs);
+                    orbit_reps_phi := List(dcs, dc -> isoTH * Representative(dc));
+                fi;
                 total := total + n_orb;
 
                 # Compute swap-orbit-id per orbit rep (used for both within-pair
@@ -1806,13 +1782,21 @@ for job_idx in [1..Length(JOBS)] do
                         # Optimization (1) shortcut: 1 orbit, trivially swap-fixed.
                         swap_orb_id_arr[1] := 1;
                     else
+                        # Find which double coset contains the swap of each orbit rep.
+                        # See ProcessPair (GAP_DRIVER) for the derivation.
+                        tinv := InverseGeneralMapping(isoTH);
+                        gensQ := GeneratorsOfGroup(h1orb.Q);
                         for i in [1..n_orb] do
-                            phi := orbit_reps_phi[i];
-                            swap_phi := InverseGeneralMapping(phi);
-                            swap_key := String(KeyOf(swap_phi));
-                            if IsBound(idx.(swap_key)) then
-                                swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
-                            fi;
+                            # g_swap is initially a CompositionMapping which
+                            # DoubleCoset.in does not recognize as an h1.AutQ
+                            # element.  Reify it as GroupHomomorphismByImagesNC
+                            # by evaluating on Q's generators.
+                            g_swap := tinv * InverseGeneralMapping(Representative(dcs[i])) * tinv;
+                            g_swap := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
+                                gensQ, List(gensQ, q -> Image(g_swap, q)));
+                            SetIsBijective(g_swap, true);
+                            swap_orb_id_arr[i] :=
+                                PositionProperty(dcs, dc -> g_swap in dc);
                         od;
                     fi;
                 fi;
@@ -1960,6 +1944,11 @@ end;
 SafeGroup := function(gens, default_amb)
     if Length(gens) = 0 then return TrivialSubgroup(default_amb); fi;
     return Group(gens);
+end;
+
+SafeSub := function(G, gens)
+    if Length(gens) = 0 then return TrivialSubgroup(G); fi;
+    return Subgroup(G, gens);
 end;
 
 ReconstructHData := function(entry, S_M)
@@ -2506,7 +2495,8 @@ for group_idx in [1..Length(GROUPS)] do
                   isos, n, gensQ, KeyOf, idx, seen, n_orb, queue, j, phi,
                   alpha, beta, neighbor, nkey, k, fp, orbit_id, i, swap_phi,
                   swap_key, swap_iso_idx, swap_orbit_id,
-                  h1_orb_idx, orbit_reps_phi, h_0, t_0, swap_orb_id_arr;
+                  h1_orb_idx, orbit_reps_phi, h_0, t_0, swap_orb_id_arr,
+                  dcs, A1, A2_in_h1, A2_in_h1_gens, tinv, g_swap;
             total := 0; swap_fixed := 0;
             for h1_orb_idx in [1..Length(H1data.orbits)] do
                 h1orb := H1data.orbits[h1_orb_idx];
@@ -2581,49 +2571,19 @@ for group_idx in [1..Length(GROUPS)] do
                     if h1orb.full_aut = true or h2orb.full_aut = true then
                         n_orb := 1;
                         orbit_reps_phi := [isoTH];
+                        dcs := [];   # placeholder; not used in saturated branch
                     else
-                    isos := List(AsList(h2orb.AutQ), a -> a * isoTH);
-                    n := Length(isos);
-                    gensQ := GeneratorsOfGroup(h2orb.Q);
-                    KeyOf := function(phi) return List(gensQ, q -> Image(phi, q)); end;
-                    idx := rec();
-                    for i in [1..n] do idx.(String(KeyOf(isos[i]))) := i; od;
-                    seen := ListWithIdenticalEntries(n, false);
-                    orbit_id := ListWithIdenticalEntries(n, 0);
-                    n_orb := 0;
-                    orbit_reps_phi := [];
-                    for i in [1..n] do
-                        if seen[i] then continue; fi;
-                        n_orb := n_orb + 1;
-                        Add(orbit_reps_phi, isos[i]);
-                        seen[i] := true; orbit_id[i] := n_orb;
-                        queue := [i];
-                        while Length(queue) > 0 do
-                            j := Remove(queue);
-                            phi := isos[j];
-                            for alpha in h1orb.A_gens do
-                                neighbor := phi * alpha;
-                                nkey := String(KeyOf(neighbor));
-                                if IsBound(idx.(nkey)) then
-                                    k := idx.(nkey);
-                                    if not seen[k] then
-                                        seen[k] := true; orbit_id[k] := n_orb; Add(queue, k);
-                                    fi;
-                                fi;
-                            od;
-                            for beta in h2orb.A_gens do
-                                neighbor := InverseGeneralMapping(beta) * phi;
-                                nkey := String(KeyOf(neighbor));
-                                if IsBound(idx.(nkey)) then
-                                    k := idx.(nkey);
-                                    if not seen[k] then
-                                        seen[k] := true; orbit_id[k] := n_orb; Add(queue, k);
-                                    fi;
-                                fi;
-                            od;
-                        od;
-                    od;
-                    fi;   # end Aut-saturation shortcut else-branch
+                        # Optimization (6) 2026-04-29: DoubleCosets replaces BFS.
+                        # See ProcessPair (GAP_DRIVER) for the derivation.
+                        A1 := SafeSub(h1orb.AutQ, h1orb.A_gens);
+                        # Use InducedAutomorphism to transport b to Aut(h1.Q).
+                        A2_in_h1_gens := List(h2orb.A_gens,
+                            b -> InducedAutomorphism(isoTH, b));
+                        A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
+                        dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
+                        n_orb := Length(dcs);
+                        orbit_reps_phi := List(dcs, dc -> isoTH * Representative(dc));
+                    fi;
                     total := total + n_orb;
 
                     # Compute swap-orbit-id per orbit rep (for within-self-pair
@@ -2634,13 +2594,21 @@ for group_idx in [1..Length(GROUPS)] do
                             # Optimization (1) shortcut: 1 orbit, trivially swap-fixed.
                             swap_orb_id_arr[1] := 1;
                         else
+                            # Find which double coset contains the swap of each rep.
+                            # See ProcessPair (GAP_DRIVER) for the derivation.
+                            tinv := InverseGeneralMapping(isoTH);
+                            gensQ := GeneratorsOfGroup(h1orb.Q);
                             for i in [1..n_orb] do
-                                phi := orbit_reps_phi[i];
-                                swap_phi := InverseGeneralMapping(phi);
-                                swap_key := String(KeyOf(swap_phi));
-                                if IsBound(idx.(swap_key)) then
-                                    swap_orb_id_arr[i] := orbit_id[idx.(swap_key)];
-                                fi;
+                                # g_swap is initially a CompositionMapping which
+                                # DoubleCoset.in does not recognize as an h1.AutQ
+                                # element.  Reify it as GroupHomomorphismByImagesNC
+                                # by evaluating on Q's generators.
+                                g_swap := tinv * InverseGeneralMapping(Representative(dcs[i])) * tinv;
+                                g_swap := GroupHomomorphismByImagesNC(h1orb.Q, h1orb.Q,
+                                    gensQ, List(gensQ, q -> Image(g_swap, q)));
+                                SetIsBijective(g_swap, true);
+                                swap_orb_id_arr[i] :=
+                                    PositionProperty(dcs, dc -> g_swap in dc);
                             od;
                         fi;
                     fi;
