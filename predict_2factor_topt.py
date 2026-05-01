@@ -1504,14 +1504,25 @@ else
 fi;
 
 H_CACHE := fail;
+# Cache-load policy: if RESUME_BUILD is in flight, the on-disk file is a
+# *partial* cache that we want to extend, NOT a complete cache to skip-load.
 if CACHE_LEFT_PATH <> "" and IsValidCacheFile(CACHE_LEFT_PATH) then
-    Print("[t+", Runtime() - batch_t0, "ms] reading H_CACHE from disk: ",
-          CACHE_LEFT_PATH, "\n");
-    Read(CACHE_LEFT_PATH);
-    Print("[t+", Runtime() - batch_t0, "ms] H_CACHE read complete: ",
-          Length(H_CACHE), " entries\n");
+    if RESUME_BUILD_NEXT_HI > 0 then
+        Print("[t+", Runtime() - batch_t0,
+              "ms] reading PARTIAL H_CACHE from disk (resuming build at ",
+              RESUME_BUILD_NEXT_HI, "): ", CACHE_LEFT_PATH, "\n");
+        Read(CACHE_LEFT_PATH);
+        Print("[t+", Runtime() - batch_t0, "ms] partial H_CACHE: ",
+              Length(H_CACHE), " entries already built\n");
+    else
+        Print("[t+", Runtime() - batch_t0, "ms] reading H_CACHE from disk: ",
+              CACHE_LEFT_PATH, "\n");
+        Read(CACHE_LEFT_PATH);
+        Print("[t+", Runtime() - batch_t0, "ms] H_CACHE read complete: ",
+              Length(H_CACHE), " entries\n");
+    fi;
 fi;
-if H_CACHE <> fail then
+if H_CACHE <> fail and RESUME_BUILD_NEXT_HI = 0 then
     for hi in [1..Length(H_CACHE)] do NormalizeHCacheEntry(H_CACHE[hi]); od;
     extend_needed := false;
     for hi in [1..Length(H_CACHE)] do
@@ -1537,17 +1548,23 @@ if H_CACHE <> fail then
         Print("[t+", Runtime() - batch_t0, "ms] extension done\n");
     fi;
 fi;
-if H_CACHE = fail then
-    Print("[t+", Runtime() - batch_t0, "ms] no cache; reading subs\n");
+if H_CACHE = fail or RESUME_BUILD_NEXT_HI > 0 then
     Read(SUBS_LEFT_PATH);
     SUBGROUPS_LEFT_RAW := SUBGROUPS;
+    if H_CACHE = fail then
+        Print("[t+", Runtime() - batch_t0, "ms] no cache; reading subs\n");
+        H_CACHE := [];
+        BUILD_START_HI := 1;
+    else
+        BUILD_START_HI := RESUME_BUILD_NEXT_HI;
+    fi;
     Print("[t+", Runtime() - batch_t0, "ms] computing left H_CACHE for ",
-          Length(SUBGROUPS_LEFT_RAW), " subgroups (in W_ML)...\n");
+          Length(SUBGROUPS_LEFT_RAW), " subgroups (in W_ML)",
+          " from entry ", BUILD_START_HI, "...\n");
     last_hb := Runtime();
     last_hb_count := 0;
-    H_CACHE := [];
-    for hi in [1..Length(SUBGROUPS_LEFT_RAW)] do
-        if hi = 1 or hi - last_hb_count >= 500
+    for hi in [BUILD_START_HI..Length(SUBGROUPS_LEFT_RAW)] do
+        if hi = BUILD_START_HI or hi - last_hb_count >= 500
            or Runtime() - last_hb >= 60000 then
             Print("  [t+", Runtime() - batch_t0, "ms] H_CACHE starting ",
                   hi, "/", Length(SUBGROUPS_LEFT_RAW),
@@ -1556,10 +1573,34 @@ if H_CACHE = fail then
             last_hb_count := hi;
         fi;
         Add(H_CACHE, ComputeHCacheEntry(SUBGROUPS_LEFT_RAW[hi], W_ML, LEFT_Q_GROUPS));
+        # Opt 9: build-phase checkpoint.  After each entry, if we've crossed
+        # the elapsed threshold AND there's more work to do, save partial
+        # cache + state.g and quit.  Python relaunches; on resume,
+        # RESUME_BUILD_NEXT_HI points us to continue from hi+1.
+        if STATE_FILE <> "" and CHECKPOINT_INTERVAL_MS > 0
+           and Runtime() - WORKER_START >= CHECKPOINT_INTERVAL_MS
+           and hi < Length(SUBGROUPS_LEFT_RAW)
+           and CACHE_LEFT_PATH <> "" then
+            SaveHCacheList(CACHE_LEFT_PATH, H_CACHE);
+            tmp := Concatenation(STATE_FILE, ".tmp");
+            PrintTo(tmp, "RESUME_BUILD := rec( next_hi := ", hi + 1, " );\n");
+            Exec(Concatenation("mv -f -- '", tmp, "' '", STATE_FILE, "'"));
+            Print("CHECKPOINT_PAUSE_BUILD next_hi=", hi + 1,
+                  " of=", Length(SUBGROUPS_LEFT_RAW),
+                  " elapsed_ms=", Runtime() - WORKER_START, "\n");
+            LogTo();
+            QuitGap();
+        fi;
     od;
     Print("[t+", Runtime() - batch_t0, "ms] H_CACHE compute done\n");
     if CACHE_LEFT_PATH <> "" then
         SaveHCacheList(CACHE_LEFT_PATH, H_CACHE);
+    fi;
+    # Build done — clear any RESUME_BUILD state so the pair loop starts
+    # cleanly.  (RESUME_STATE if present remains for pair-loop resume.)
+    if RESUME_BUILD_NEXT_HI > 0 and STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
+        RemoveFile(STATE_FILE);
+        RESUME_BUILD_NEXT_HI := 0;
     fi;
 fi;
 H_CACHE_L := H_CACHE;
@@ -1582,13 +1623,15 @@ Print("[t+", Runtime() - batch_t0, "ms] ReconstructHData done; LEFT loaded: ",
 # determine the q-size filter).
 Print("JOBS: ", Length(JOBS), " jobs to run\n");
 
-# ---- Checkpoint-restart support (opt 8) ----
+# ---- Checkpoint-restart support (opts 8, 9) ----
 # Long-running batches (heavy LEFTs) accumulate GAP heap pressure that slows
 # garbage collection 10-20x per pair after a few hours.  To avoid this, we
 # checkpoint after each LEFT-class iteration once `Runtime() - WORKER_START`
-# crosses CHECKPOINT_INTERVAL_MS, save state to STATE_FILE, then QUIT.  The
-# Python orchestrator detects state file presence and re-invokes GAP, which
-# reads the state on startup and resumes the pair loop from the saved index.
+# crosses CHECKPOINT_INTERVAL_MS, save state to STATE_FILE, then QuitGap.
+# Two phases checkpoint independently, sharing the same state.g file:
+#   - opt 8: pair-loop phase (RESUME_STATE := rec(...))
+#   - opt 9: cache-build phase (RESUME_BUILD := rec(next_hi := K)), with
+#     the partial H_CACHE saved atomically to CACHE_LEFT_PATH.
 STATE_FILE := "__STATE_FILE__";
 CHECKPOINT_INTERVAL_MS := __CHECKPOINT_INTERVAL_MS__;
 WORKER_START := Runtime();
@@ -1598,6 +1641,7 @@ RESUME_PAIR_I := 1;
 RESUME_FP_LINES := [];
 RESUME_TOTAL_ORB := 0;
 RESUME_TOTAL_FIX := 0;
+RESUME_BUILD_NEXT_HI := 0;   # 0 = no build resume
 
 if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
     Read(STATE_FILE);
@@ -1611,6 +1655,10 @@ if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
               " pair_i=", RESUME_PAIR_I,
               " fp_lines=", Length(RESUME_FP_LINES),
               " orb=", RESUME_TOTAL_ORB, "\n");
+    fi;
+    if IsBound(RESUME_BUILD) then
+        RESUME_BUILD_NEXT_HI := RESUME_BUILD.next_hi;
+        Print("CHECKPOINT_RESUME_BUILD next_hi=", RESUME_BUILD_NEXT_HI, "\n");
     fi;
 fi;
 
@@ -1967,7 +2015,7 @@ for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
                   " orb=", TOTAL_ORB,
                   " elapsed_ms=", Runtime() - WORKER_START, "\n");
             LogTo();
-            QUIT;
+            QuitGap();
         fi;
     od;
 
