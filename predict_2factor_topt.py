@@ -1453,6 +1453,48 @@ S_ML := SymmetricGroup(ML);
 W_ML := BlockWreathFromPartition(LEFT_PARTITION);
 batch_t0 := Runtime();
 
+# ---- Checkpoint-restart support (opts 8, 9) ----
+# Long-running batches (heavy LEFTs) accumulate GAP heap pressure that slows
+# garbage collection 10-20x per pair after a few hours.  To avoid this, we
+# checkpoint after each LEFT-class iteration once `Runtime() - WORKER_START`
+# crosses CHECKPOINT_INTERVAL_MS, save state to STATE_FILE, then QuitGap.
+# Two phases checkpoint independently, sharing the same state.g file:
+#   - opt 8: pair-loop phase (RESUME_STATE := rec(...))
+#   - opt 9: cache-build phase (RESUME_BUILD := rec(next_hi := K)), with
+#     the partial H_CACHE saved atomically to CACHE_LEFT_PATH.
+# Setup must run BEFORE the cache-load logic, since cache-load reads
+# RESUME_BUILD_NEXT_HI to decide whether to treat the on-disk cache as
+# partial-resume vs final-skip-load.
+STATE_FILE := "__STATE_FILE__";
+CHECKPOINT_INTERVAL_MS := __CHECKPOINT_INTERVAL_MS__;
+WORKER_START := Runtime();
+
+RESUME_JOB_IDX := 1;
+RESUME_PAIR_I := 1;
+RESUME_FP_LINES := [];
+RESUME_TOTAL_ORB := 0;
+RESUME_TOTAL_FIX := 0;
+RESUME_BUILD_NEXT_HI := 0;   # 0 = no build resume
+
+if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
+    Read(STATE_FILE);
+    if IsBound(RESUME_STATE) then
+        RESUME_JOB_IDX := RESUME_STATE.job_idx;
+        RESUME_PAIR_I := RESUME_STATE.pair_i;
+        RESUME_FP_LINES := RESUME_STATE.fp_lines;
+        RESUME_TOTAL_ORB := RESUME_STATE.total_orb;
+        RESUME_TOTAL_FIX := RESUME_STATE.total_fix;
+        Print("CHECKPOINT_RESUME job_idx=", RESUME_JOB_IDX,
+              " pair_i=", RESUME_PAIR_I,
+              " fp_lines=", Length(RESUME_FP_LINES),
+              " orb=", RESUME_TOTAL_ORB, "\n");
+    fi;
+    if IsBound(RESUME_BUILD) then
+        RESUME_BUILD_NEXT_HI := RESUME_BUILD.next_hi;
+        Print("CHECKPOINT_RESUME_BUILD next_hi=", RESUME_BUILD_NEXT_HI, "\n");
+    fi;
+fi;
+
 LEFT_Q_GROUPS := [];
 seen_qids := Set([]);
 for job_idx in [1..Length(JOBS)] do
@@ -1619,50 +1661,10 @@ od;
 Print("[t+", Runtime() - batch_t0, "ms] ReconstructHData done; LEFT loaded: ",
       Length(H_CACHE_L), " entries\n");
 
-# JOBS array was loaded above the LEFT cache build (we needed m_right's to
-# determine the q-size filter).
 Print("JOBS: ", Length(JOBS), " jobs to run\n");
 
-# ---- Checkpoint-restart support (opts 8, 9) ----
-# Long-running batches (heavy LEFTs) accumulate GAP heap pressure that slows
-# garbage collection 10-20x per pair after a few hours.  To avoid this, we
-# checkpoint after each LEFT-class iteration once `Runtime() - WORKER_START`
-# crosses CHECKPOINT_INTERVAL_MS, save state to STATE_FILE, then QuitGap.
-# Two phases checkpoint independently, sharing the same state.g file:
-#   - opt 8: pair-loop phase (RESUME_STATE := rec(...))
-#   - opt 9: cache-build phase (RESUME_BUILD := rec(next_hi := K)), with
-#     the partial H_CACHE saved atomically to CACHE_LEFT_PATH.
-STATE_FILE := "__STATE_FILE__";
-CHECKPOINT_INTERVAL_MS := __CHECKPOINT_INTERVAL_MS__;
-WORKER_START := Runtime();
-
-RESUME_JOB_IDX := 1;
-RESUME_PAIR_I := 1;
-RESUME_FP_LINES := [];
-RESUME_TOTAL_ORB := 0;
-RESUME_TOTAL_FIX := 0;
-RESUME_BUILD_NEXT_HI := 0;   # 0 = no build resume
-
-if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
-    Read(STATE_FILE);
-    if IsBound(RESUME_STATE) then
-        RESUME_JOB_IDX := RESUME_STATE.job_idx;
-        RESUME_PAIR_I := RESUME_STATE.pair_i;
-        RESUME_FP_LINES := RESUME_STATE.fp_lines;
-        RESUME_TOTAL_ORB := RESUME_STATE.total_orb;
-        RESUME_TOTAL_FIX := RESUME_STATE.total_fix;
-        Print("CHECKPOINT_RESUME job_idx=", RESUME_JOB_IDX,
-              " pair_i=", RESUME_PAIR_I,
-              " fp_lines=", Length(RESUME_FP_LINES),
-              " orb=", RESUME_TOTAL_ORB, "\n");
-    fi;
-    if IsBound(RESUME_BUILD) then
-        RESUME_BUILD_NEXT_HI := RESUME_BUILD.next_hi;
-        Print("CHECKPOINT_RESUME_BUILD next_hi=", RESUME_BUILD_NEXT_HI, "\n");
-    fi;
-fi;
-
-# Per-job processing.
+# Per-job processing.  RESUME_JOB_IDX was set during the checkpoint setup
+# block (which runs before the LEFT cache build).
 for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
     JOB := JOBS[job_idx];
     job_t0 := Runtime();
