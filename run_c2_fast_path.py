@@ -16,7 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting")
+ROOT = Path(__file__).resolve().parent
 TEMPLATE = ROOT / "c2_fast_path_writer.g"
 TMP_DIR = Path(os.environ.get(
     "PREDICT_TMP_DIR", str(ROOT / "predict_species_tmp" / "_c2_fast")))
@@ -31,6 +31,11 @@ def to_cyg(p) -> str:
     if len(s) >= 2 and s[1] == ":":
         return f"/cygdrive/{s[0].lower()}{s[2:]}"
     return s
+
+
+def to_gap(p) -> str:
+    """Windows-style path syntax for paths embedded inside GAP source."""
+    return str(p).replace("\\", "/")
 
 
 def parse_combo(combo_str):
@@ -64,10 +69,10 @@ def run_c2(combo_str, output_path, timeout=3600):
     template = TEMPLATE.read_text(encoding="utf-8")
     run_g.write_text(
         template
-        .replace("__LOG_PATH__", to_cyg(log))
+        .replace("__LOG_PATH__", to_gap(log))
         .replace("__PARTITION_STR__", partition_str)
         .replace("__COMBO_STR__", combo_str_gap)
-        .replace("__OUTPUT_PATH__", to_cyg(output_path)),
+        .replace("__OUTPUT_PATH__", to_gap(output_path)),
         encoding="utf-8"
     )
 

@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting")
+ROOT = Path(__file__).resolve().parent
 SN_DIR = Path(os.environ.get("PREDICT_SN_DIR", str(ROOT / "parallel_sn")))
 TMP = Path(os.environ.get("PREDICT_TMP_DIR",
                           str(ROOT / "predict_species_tmp" / "_full_general_wreath")))
@@ -40,6 +40,11 @@ def to_cyg(p) -> str:
     if len(s) >= 2 and s[1] == ":":
         return f"/cygdrive/{s[0].lower()}{s[2:]}"
     return s
+
+
+def to_gap(p) -> str:
+    """Windows-style path syntax for paths embedded inside GAP source."""
+    return str(p).replace("\\", "/")
 
 
 def parse_combo_file(path: Path) -> list[str]:
@@ -68,7 +73,7 @@ def parse_combo_file(path: Path) -> list[str]:
 GAP_WREATH = r"""
 LogTo("__LOG__");
 
-Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g");
+Read("__LIFTING_G__");
 
 # inputs
 M     := __M__;       # source degree (= (m_blocks - 1) * d)
@@ -585,13 +590,14 @@ def predict_wreath(combo_str: str, target_n=18, timeout=3600,
     run_g = work / "run.g"
     run_g.write_text(
         GAP_WREATH
-        .replace("__LOG__", to_cyg(log))
+        .replace("__LOG__", to_gap(log))
+        .replace("__LIFTING_G__", to_gap(ROOT / "lifting_algorithm.g"))
         .replace("__M__", str(src_n))
         .replace("__D__", str(d))
         .replace("__T_ID__", str(t))
         .replace("__M_BLOCKS__", str(m_blocks))
-        .replace("__SUBS_CYG__", to_cyg(subs_g))
-        .replace("__GEN_PATH__", to_cyg(gen_path) if gen_path else ""),
+        .replace("__SUBS_CYG__", to_gap(subs_g))
+        .replace("__GEN_PATH__", to_gap(gen_path) if gen_path else ""),
         encoding="utf-8",
     )
 

@@ -32,7 +32,7 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting")
 SN_DIR = Path(os.environ.get("PREDICT_SN_DIR", str(ROOT / "parallel_sn")))
 S18_DIR = ROOT / "parallel_s18"
 TMP = Path(os.environ.get("PREDICT_TMP_DIR",
@@ -58,11 +58,6 @@ def to_cyg(p) -> str:
     return s
 
 
-def to_gap(p) -> str:
-    """Windows-style path syntax for paths embedded inside GAP source."""
-    return str(p).replace("\\", "/")
-
-
 def ensure_lifting_workspace():
     """Build lifting.ws workspace if it's missing or stale.
     Saves ~9 seconds per GAP invocation (12.9s cold -> 3.6s with `-L ws`)."""
@@ -73,8 +68,8 @@ def ensure_lifting_workspace():
           flush=True)
     save_g = ROOT / "_build_lifting_workspace.g"
     save_g.write_text(
-        f'Read("{to_gap(LIFTING_G)}");\n'
-        f'SaveWorkspace("{to_gap(LIFTING_WS)}");\n'
+        f'Read("{str(LIFTING_G).replace(chr(92), chr(47))}");\n'
+        f'SaveWorkspace("{to_cyg(LIFTING_WS)}");\n'
         f'QUIT;\n', encoding="utf-8")
     cmd = [GAP_BASH, "--login", "-c",
            f'cd "{GAP_HOME}" && ./gap.exe -q -o 0 "{to_cyg(save_g)}"']
@@ -363,7 +358,7 @@ SafeSub := function(G, gens)
 end;
 
 # Goursat fiber product builder (from lifting_algorithm.g).
-if not IsBound(_GoursatBuildFiberProduct) then Read("__LIFTING_G__"); fi;
+if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
 
 # Reconstruct H-side data with Aut(Q) and induced auto generators from a
 # cached entry.  Cache shape: rec(H_gens, N_H_gens, orbits := [rec(K_H_gens,
@@ -642,13 +637,6 @@ end;
 
 SaveHCacheList := function(path, h_cache)
     local tmp;
-    # Write-once guard: H_CACHE content is deterministic for a given path,
-    # so if a valid cache already exists (written by another worker),
-    # skip the rewrite.  Avoids the Cygwin/Windows race where mv -f falls
-    # back to unlink+create when the destination is held open by a
-    # concurrent reader, leaving a transient gap during which the reader's
-    # Read() fails with "file must exist".
-    if IsValidCacheFile(path) then return; fi;
     # Atomic write: PrintTo to a .tmp file, then `mv` to the final path.
     # Prevents corrupt-cache leftovers if the process is killed mid-write.
     # Unique tmp filename per call: prevents two GAP workers from clobbering
@@ -908,60 +896,33 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
             continue;
         fi;
 
-        # |Q| = 2 fast path: RIGHT is C_2 directly.  For larger RIGHT
-        # degrees, build through the quotient homomorphisms; the direct
-        # generator shortcut can collapse distinct MR>2 quotient pairs.
+        # |Q| = 2 fast path: |Aut(C_2)|=1 so direct <K1, K2^shift, h_0*t_0^shift>
+        # construction works for ANY MR.  Optimization (2) 2026-04-28: generalized
+        # from MR=2-only to all MR.
         if h1orb.qsize = 2 then
-            if MR = 2 then
-                for h2idx in h2idxs do
-                    if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
-                    total := total + 1;
-                    h2orb := H2data.orbits[h2idx];
-                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                        if GEN_FILE_OPEN then
-                            h_0 := First(GeneratorsOfGroup(H1),
-                                         g -> not (g in h1orb.K));
-                            t_0 := First(GeneratorsOfGroup(H2data.H),
-                                         g -> not (g in h2orb.K));
-                            fp := Group(Concatenation(
-                                Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
-                                List(Filtered(GeneratorsOfGroup(h2orb.K),
-                                              g -> g <> ()),
-                                     g -> g^shift_R),
-                                [h_0 * t_0^shift_R]));
-                            EmitGenerators(fp);
-                        fi;
+            for h2idx in h2idxs do
+                if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
+                total := total + 1;
+                h2orb := H2data.orbits[h2idx];
+                if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                    if GEN_FILE_OPEN then
+                        h_0 := First(GeneratorsOfGroup(H1),
+                                     g -> not (g in h1orb.K));
+                        t_0 := First(GeneratorsOfGroup(H2data.H),
+                                     g -> not (g in h2orb.K));
+                        fp := Group(Concatenation(
+                            Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
+                            List(Filtered(GeneratorsOfGroup(h2orb.K),
+                                          g -> g <> ()),
+                                 g -> g^shift_R),
+                            [h_0 * t_0^shift_R]));
+                        EmitGenerators(fp);
                     fi;
-                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                        swap_fixed := swap_fixed + 1;
-                    fi;
-                od;
-            else
-                for h2idx in h2idxs do
-                    if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
-                    total := total + 1;
-                    h2orb := H2data.orbits[h2idx];
-                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                        EnsureHom(h1orb); EnsureHom(h2orb);
-                        if GEN_FILE_OPEN then
-                            isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
-                            if isoTH <> fail then
-                                fp := _GoursatBuildFiberProduct(
-                                    H1, H2,
-                                    h1orb.hom,
-                                    CompositionMapping(h2orb.hom,
-                                        ConjugatorIsomorphism(H2, shift_R^-1)),
-                                    InverseGeneralMapping(isoTH),
-                                    [1..ML], [ML+1..ML+MR]);
-                                if fp <> fail then EmitGenerators(fp); fi;
-                            fi;
-                        fi;
-                    fi;
-                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                        swap_fixed := swap_fixed + 1;
-                    fi;
-                od;
-            fi;
+                fi;
+                if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                    swap_fixed := swap_fixed + 1;
+                fi;
+            od;
             continue;
         fi;
 
@@ -993,10 +954,7 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                 # math composition), α' in Aut(h1.Q).  The action α o phi o β^-1
                 # (α in A1 = <h1.A_gens>, β in A2 = <h2.A_gens>) becomes
                 # α' -> α α' β'^-1 with β' = isoTH o β o isoTH^-1 in Aut(h1.Q).
-                # GAP mapping multiplication applies the left map first, so
-                # target-side automorphisms act on r from the right and
-                # source-side automorphisms act from the left after transport.
-                # Orbits = double cosets A2_in_h1 \ Aut(h1.Q) / A1.
+                # Orbits = double cosets A1 \ Aut(h1.Q) / A2_in_h1.
                 # Bench-validated 5.4x avg, 22-68x on |Aut|>=1152 buckets, 0
                 # mismatches across 21,647 verified pairs.
                 A1 := SafeSub(h1orb.AutQ, h1orb.A_gens);
@@ -1012,7 +970,7 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                 A2_in_h1_gens := List(h2orb.A_gens,
                     b -> InducedAutomorphism(isoTH, b));
                 A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
-                dcs := DoubleCosets(h1orb.AutQ, A2_in_h1, A1);
+                dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
                 n_orb := Length(dcs);
                 # GAP composition: f * g = "apply f first, then g" = standard g o f.
                 # Orbit rep phi_i = standard Rep(dcs[i]) o isoTH = GAP isoTH * Rep(dcs[i]).
@@ -1142,7 +1100,7 @@ LogTo("__LOG__");
 SizeScreen([100000, 24]);   # disable line wrapping in output
 
 # Path to lifting_algorithm.g for _GoursatBuildFiberProduct.
-if not IsBound(_GoursatBuildFiberProduct) then Read("__LIFTING_G__"); fi;
+if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
 
 # Common helpers (same as GAP_DRIVER).
 ConjAction := function(K, g) return K^g; end;
@@ -1442,13 +1400,6 @@ end;
 
 SaveHCacheList := function(path, h_cache)
     local tmp;
-    # Write-once guard: H_CACHE content is deterministic for a given path,
-    # so if a valid cache already exists (written by another worker),
-    # skip the rewrite.  Avoids the Cygwin/Windows race where mv -f falls
-    # back to unlink+create when the destination is held open by a
-    # concurrent reader, leaving a transient gap during which the reader's
-    # Read() fails with "file must exist".
-    if IsValidCacheFile(path) then return; fi;
     # Atomic write: PrintTo to a .tmp file, then `mv` to the final path.
     # Prevents corrupt-cache leftovers if the process is killed mid-write.
     # Unique tmp filename per call: prevents two GAP workers from clobbering
@@ -1492,48 +1443,6 @@ JOBS := __JOBS_ARRAY__;
 S_ML := SymmetricGroup(ML);
 W_ML := BlockWreathFromPartition(LEFT_PARTITION);
 batch_t0 := Runtime();
-
-# ---- Checkpoint-restart support (opts 8, 9) ----
-# Long-running batches (heavy LEFTs) accumulate GAP heap pressure that slows
-# garbage collection 10-20x per pair after a few hours.  To avoid this, we
-# checkpoint after each LEFT-class iteration once `Runtime() - WORKER_START`
-# crosses CHECKPOINT_INTERVAL_MS, save state to STATE_FILE, then QuitGap.
-# Two phases checkpoint independently, sharing the same state.g file:
-#   - opt 8: pair-loop phase (RESUME_STATE := rec(...))
-#   - opt 9: cache-build phase (RESUME_BUILD := rec(next_hi := K)), with
-#     the partial H_CACHE saved atomically to CACHE_LEFT_PATH.
-# Setup must run BEFORE the cache-load logic, since cache-load reads
-# RESUME_BUILD_NEXT_HI to decide whether to treat the on-disk cache as
-# partial-resume vs final-skip-load.
-STATE_FILE := "__STATE_FILE__";
-CHECKPOINT_INTERVAL_MS := __CHECKPOINT_INTERVAL_MS__;
-WORKER_START := Runtime();
-
-RESUME_JOB_IDX := 1;
-RESUME_PAIR_I := 1;
-RESUME_FP_LINES := [];
-RESUME_TOTAL_ORB := 0;
-RESUME_TOTAL_FIX := 0;
-RESUME_BUILD_NEXT_HI := 0;   # 0 = no build resume
-
-if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
-    Read(STATE_FILE);
-    if IsBound(RESUME_STATE) then
-        RESUME_JOB_IDX := RESUME_STATE.job_idx;
-        RESUME_PAIR_I := RESUME_STATE.pair_i;
-        RESUME_FP_LINES := RESUME_STATE.fp_lines;
-        RESUME_TOTAL_ORB := RESUME_STATE.total_orb;
-        RESUME_TOTAL_FIX := RESUME_STATE.total_fix;
-        Print("CHECKPOINT_RESUME job_idx=", RESUME_JOB_IDX,
-              " pair_i=", RESUME_PAIR_I,
-              " fp_lines=", Length(RESUME_FP_LINES),
-              " orb=", RESUME_TOTAL_ORB, "\n");
-    fi;
-    if IsBound(RESUME_BUILD) then
-        RESUME_BUILD_NEXT_HI := RESUME_BUILD.next_hi;
-        Print("CHECKPOINT_RESUME_BUILD next_hi=", RESUME_BUILD_NEXT_HI, "\n");
-    fi;
-fi;
 
 LEFT_Q_GROUPS := [];
 seen_qids := Set([]);
@@ -1586,25 +1495,14 @@ else
 fi;
 
 H_CACHE := fail;
-# Cache-load policy: if RESUME_BUILD is in flight, the on-disk file is a
-# *partial* cache that we want to extend, NOT a complete cache to skip-load.
 if CACHE_LEFT_PATH <> "" and IsValidCacheFile(CACHE_LEFT_PATH) then
-    if RESUME_BUILD_NEXT_HI > 0 then
-        Print("[t+", Runtime() - batch_t0,
-              "ms] reading PARTIAL H_CACHE from disk (resuming build at ",
-              RESUME_BUILD_NEXT_HI, "): ", CACHE_LEFT_PATH, "\n");
-        Read(CACHE_LEFT_PATH);
-        Print("[t+", Runtime() - batch_t0, "ms] partial H_CACHE: ",
-              Length(H_CACHE), " entries already built\n");
-    else
-        Print("[t+", Runtime() - batch_t0, "ms] reading H_CACHE from disk: ",
-              CACHE_LEFT_PATH, "\n");
-        Read(CACHE_LEFT_PATH);
-        Print("[t+", Runtime() - batch_t0, "ms] H_CACHE read complete: ",
-              Length(H_CACHE), " entries\n");
-    fi;
+    Print("[t+", Runtime() - batch_t0, "ms] reading H_CACHE from disk: ",
+          CACHE_LEFT_PATH, "\n");
+    Read(CACHE_LEFT_PATH);
+    Print("[t+", Runtime() - batch_t0, "ms] H_CACHE read complete: ",
+          Length(H_CACHE), " entries\n");
 fi;
-if H_CACHE <> fail and RESUME_BUILD_NEXT_HI = 0 then
+if H_CACHE <> fail then
     for hi in [1..Length(H_CACHE)] do NormalizeHCacheEntry(H_CACHE[hi]); od;
     extend_needed := false;
     for hi in [1..Length(H_CACHE)] do
@@ -1630,23 +1528,17 @@ if H_CACHE <> fail and RESUME_BUILD_NEXT_HI = 0 then
         Print("[t+", Runtime() - batch_t0, "ms] extension done\n");
     fi;
 fi;
-if H_CACHE = fail or RESUME_BUILD_NEXT_HI > 0 then
+if H_CACHE = fail then
+    Print("[t+", Runtime() - batch_t0, "ms] no cache; reading subs\n");
     Read(SUBS_LEFT_PATH);
     SUBGROUPS_LEFT_RAW := SUBGROUPS;
-    if H_CACHE = fail then
-        Print("[t+", Runtime() - batch_t0, "ms] no cache; reading subs\n");
-        H_CACHE := [];
-        BUILD_START_HI := 1;
-    else
-        BUILD_START_HI := RESUME_BUILD_NEXT_HI;
-    fi;
     Print("[t+", Runtime() - batch_t0, "ms] computing left H_CACHE for ",
-          Length(SUBGROUPS_LEFT_RAW), " subgroups (in W_ML)",
-          " from entry ", BUILD_START_HI, "...\n");
+          Length(SUBGROUPS_LEFT_RAW), " subgroups (in W_ML)...\n");
     last_hb := Runtime();
     last_hb_count := 0;
-    for hi in [BUILD_START_HI..Length(SUBGROUPS_LEFT_RAW)] do
-        if hi = BUILD_START_HI or hi - last_hb_count >= 500
+    H_CACHE := [];
+    for hi in [1..Length(SUBGROUPS_LEFT_RAW)] do
+        if hi = 1 or hi - last_hb_count >= 500
            or Runtime() - last_hb >= 60000 then
             Print("  [t+", Runtime() - batch_t0, "ms] H_CACHE starting ",
                   hi, "/", Length(SUBGROUPS_LEFT_RAW),
@@ -1655,34 +1547,10 @@ if H_CACHE = fail or RESUME_BUILD_NEXT_HI > 0 then
             last_hb_count := hi;
         fi;
         Add(H_CACHE, ComputeHCacheEntry(SUBGROUPS_LEFT_RAW[hi], W_ML, LEFT_Q_GROUPS));
-        # Opt 9: build-phase checkpoint.  After each entry, if we've crossed
-        # the elapsed threshold AND there's more work to do, save partial
-        # cache + state.g and quit.  Python relaunches; on resume,
-        # RESUME_BUILD_NEXT_HI points us to continue from hi+1.
-        if STATE_FILE <> "" and CHECKPOINT_INTERVAL_MS > 0
-           and Runtime() - WORKER_START >= CHECKPOINT_INTERVAL_MS
-           and hi < Length(SUBGROUPS_LEFT_RAW)
-           and CACHE_LEFT_PATH <> "" then
-            SaveHCacheList(CACHE_LEFT_PATH, H_CACHE);
-            tmp := Concatenation(STATE_FILE, ".tmp");
-            PrintTo(tmp, "RESUME_BUILD := rec( next_hi := ", hi + 1, " );\n");
-            Exec(Concatenation("mv -f -- '", tmp, "' '", STATE_FILE, "'"));
-            Print("CHECKPOINT_PAUSE_BUILD next_hi=", hi + 1,
-                  " of=", Length(SUBGROUPS_LEFT_RAW),
-                  " elapsed_ms=", Runtime() - WORKER_START, "\n");
-            LogTo();
-            QuitGap();
-        fi;
     od;
     Print("[t+", Runtime() - batch_t0, "ms] H_CACHE compute done\n");
     if CACHE_LEFT_PATH <> "" then
         SaveHCacheList(CACHE_LEFT_PATH, H_CACHE);
-    fi;
-    # Build done — clear any RESUME_BUILD state so the pair loop starts
-    # cleanly.  (RESUME_STATE if present remains for pair-loop resume.)
-    if RESUME_BUILD_NEXT_HI > 0 and STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
-        RemoveFile(STATE_FILE);
-        RESUME_BUILD_NEXT_HI := 0;
     fi;
 fi;
 H_CACHE_L := H_CACHE;
@@ -1701,11 +1569,12 @@ od;
 Print("[t+", Runtime() - batch_t0, "ms] ReconstructHData done; LEFT loaded: ",
       Length(H_CACHE_L), " entries\n");
 
+# JOBS array was loaded above the LEFT cache build (we needed m_right's to
+# determine the q-size filter).
 Print("JOBS: ", Length(JOBS), " jobs to run\n");
 
-# Per-job processing.  RESUME_JOB_IDX was set during the checkpoint setup
-# block (which runs before the LEFT cache build).
-for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
+# Per-job processing.
+for job_idx in [1..Length(JOBS)] do
     JOB := JOBS[job_idx];
     job_t0 := Runtime();
 
@@ -1768,18 +1637,7 @@ for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
     H2DATA := List(H_CACHE_R, e -> ReconstructHData(e, S_MR));
 
     # ---- Goursat counting + collect generator lines for emission ----
-    # Honor resume state for the resuming job; fresh start for later jobs.
-    if job_idx = RESUME_JOB_IDX then
-        fp_lines := RESUME_FP_LINES;
-        i_resume_start := RESUME_PAIR_I;
-        resume_total_orb := RESUME_TOTAL_ORB;
-        resume_total_fix := RESUME_TOTAL_FIX;
-    else
-        fp_lines := [];
-        i_resume_start := 1;
-        resume_total_orb := 0;
-        resume_total_fix := 0;
-    fi;
+    fp_lines := [];
 
     # In burnside_m2 mode, the ordered-pair iteration visits both (a, b) and
     # (b, a) of each non-diagonal orbit-pair.  These produce S_n-conjugate fp's
@@ -1838,54 +1696,30 @@ for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
             fi;
 
             if h1orb.qsize = 2 then
-                # Use the direct C_2 shortcut only when the RIGHT factor is
-                # literally degree 2.  For MR>2, keep the C_2 orbit shortcut
-                # but build the subgroup through the quotient homomorphisms.
-                if MR = 2 then
-                    for h2idx in h2idxs do
-                        h2orb := H2data.orbits[h2idx];
-                        if h2orb.qsize <> 2 then continue; fi;
-                        total := total + 1;
-                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                            h_0 := First(GeneratorsOfGroup(H1),
-                                         g -> not (g in h1orb.K));
-                            t_0 := First(GeneratorsOfGroup(H2data.H),
-                                         g -> not (g in h2orb.K));
-                            fp := Group(Concatenation(
-                                Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
-                                List(Filtered(GeneratorsOfGroup(h2orb.K),
-                                              g -> g <> ()),
-                                     g -> g^shift_R),
-                                [h_0 * t_0^shift_R]));
-                            EmitGen(fp);
-                        fi;
-                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                            swap_fixed := swap_fixed + 1;
-                        fi;
-                    od;
-                else
-                    for h2idx in h2idxs do
-                        h2orb := H2data.orbits[h2idx];
-                        if h2orb.qsize <> 2 then continue; fi;
-                        total := total + 1;
-                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                            EnsureHom(h1orb); EnsureHom(h2orb);
-                            isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
-                            if isoTH <> fail then
-                                fp := _GoursatBuildFiberProduct(
-                                    H1, H2, h1orb.hom,
-                                    CompositionMapping(h2orb.hom,
-                                        ConjugatorIsomorphism(H2, shift_R^-1)),
-                                    InverseGeneralMapping(isoTH),
-                                    [1..ML], [ML+1..ML+MR]);
-                                if fp <> fail then EmitGen(fp); fi;
-                            fi;
-                        fi;
-                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                            swap_fixed := swap_fixed + 1;
-                        fi;
-                    od;
-                fi;
+                # Optimization (2) 2026-04-28: |Aut(C_2)|=1 so the direct
+                # <K1, K2^shift, h_0*t_0^shift> construction works for ANY MR
+                # (was previously only used for MR=2).
+                for h2idx in h2idxs do
+                    h2orb := H2data.orbits[h2idx];
+                    if h2orb.qsize <> 2 then continue; fi;
+                    total := total + 1;
+                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                        h_0 := First(GeneratorsOfGroup(H1),
+                                     g -> not (g in h1orb.K));
+                        t_0 := First(GeneratorsOfGroup(H2data.H),
+                                     g -> not (g in h2orb.K));
+                        fp := Group(Concatenation(
+                            Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
+                            List(Filtered(GeneratorsOfGroup(h2orb.K),
+                                          g -> g <> ()),
+                                 g -> g^shift_R),
+                            [h_0 * t_0^shift_R]));
+                        EmitGen(fp);
+                    fi;
+                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                        swap_fixed := swap_fixed + 1;
+                    fi;
+                od;
                 continue;
             fi;
 
@@ -1918,7 +1752,7 @@ for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
                     A2_in_h1_gens := List(h2orb.A_gens,
                         b -> InducedAutomorphism(isoTH, b));
                     A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
-                    dcs := DoubleCosets(h1orb.AutQ, A2_in_h1, A1);
+                    dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
                     n_orb := Length(dcs);
                     orbit_reps_phi := List(dcs, dc -> isoTH * Representative(dc));
                 fi;
@@ -1993,27 +1827,21 @@ for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
         return rec(orbits := total, swap_fixed := swap_fixed);
     end;
 
-    TOTAL_ORB := resume_total_orb;
-    TOTAL_FIX := resume_total_fix;
+    TOTAL_ORB := 0;
+    TOTAL_FIX := 0;
     last_hb_ms := Runtime() - job_t0;
-    n_pairs_done := (i_resume_start - 1) * Length(H2DATA);
+    n_pairs_done := 0;
     n_pairs_total := Length(H1DATA_LIST) * Length(H2DATA);
-    if i_resume_start > 1 then
-        Print("    [t+", Runtime() - job_t0, "ms] resuming pair loop at i=",
-              i_resume_start, "/", Length(H1DATA_LIST),
-              " (", n_pairs_done, " pairs already done, orb=", TOTAL_ORB, ")\n");
-    else
-        Print("    [t+", Runtime() - job_t0, "ms] starting H1xH2 loop: ",
-              Length(H1DATA_LIST), " x ", Length(H2DATA),
-              " = ", n_pairs_total, " pairs\n");
-    fi;
+    Print("    [t+", Runtime() - job_t0, "ms] starting H1xH2 loop: ",
+          Length(H1DATA_LIST), " x ", Length(H2DATA),
+          " = ", n_pairs_total, " pairs\n");
     # Optimization (4) 2026-04-28: precompute shifted RIGHT once per j outside
     # the i loop.  For burnside_m2 mode, H2DATA[1] gets overwritten per-i so
     # we must compute per-pair (only 1 entry, so cheap).
     if BURNSIDE_M2 = 0 then
         H2_SHIFTED := List(H2DATA, hd -> hd.H^shift_R);
     fi;
-    for i in [i_resume_start..Length(H1DATA_LIST)] do
+    for i in [1..Length(H1DATA_LIST)] do
         H1data_j := H1DATA_LIST[i];
         H1_j := H1data_j.H;
         # For burnside_m2: override H2DATA[1] with H1data so K = K comparison works.
@@ -2040,28 +1868,6 @@ for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
                 last_hb_ms := Runtime() - job_t0;
             fi;
         od;
-        # Checkpoint check: after completing all j for this i.  If we've been
-        # running longer than CHECKPOINT_INTERVAL_MS, save state and quit.
-        if STATE_FILE <> "" and CHECKPOINT_INTERVAL_MS > 0
-           and Runtime() - WORKER_START >= CHECKPOINT_INTERVAL_MS
-           and i < Length(H1DATA_LIST) then
-            tmp := Concatenation(STATE_FILE, ".tmp");
-            PrintTo(tmp, "RESUME_STATE := rec(\n",
-                "  job_idx := ", job_idx, ",\n",
-                "  pair_i := ", i + 1, ",\n",
-                "  total_orb := ", TOTAL_ORB, ",\n",
-                "  total_fix := ", TOTAL_FIX, ",\n",
-                "  fp_lines := ", fp_lines, "\n",
-                ");\n");
-            Exec(Concatenation("mv -f -- '", tmp, "' '", STATE_FILE, "'"));
-            Print("CHECKPOINT_PAUSE job_idx=", job_idx,
-                  " next_pair_i=", i + 1,
-                  " of=", Length(H1DATA_LIST),
-                  " orb=", TOTAL_ORB,
-                  " elapsed_ms=", Runtime() - WORKER_START, "\n");
-            LogTo();
-            QuitGap();
-        fi;
     od;
 
     if BURNSIDE_M2 = 1 then
@@ -2090,12 +1896,6 @@ for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
           " elapsed_ms=", elapsed_ms, "\n");
 od;
 
-# All jobs done — remove the state file so the orchestrator's resume loop
-# stops re-invoking us.
-if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
-    RemoveFile(STATE_FILE);
-fi;
-
 LogTo();
 QUIT;
 """
@@ -2111,7 +1911,7 @@ SUPER_BATCH_DRIVER = r"""
 LogTo("__LOG__");
 SizeScreen([100000, 24]);
 
-if not IsBound(_GoursatBuildFiberProduct) then Read("__LIFTING_G__"); fi;
+if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
 
 ConjAction := function(K, g) return K^g; end;
 
@@ -2410,13 +2210,6 @@ end;
 
 SaveHCacheList := function(path, h_cache)
     local tmp;
-    # Write-once guard: H_CACHE content is deterministic for a given path,
-    # so if a valid cache already exists (written by another worker),
-    # skip the rewrite.  Avoids the Cygwin/Windows race where mv -f falls
-    # back to unlink+create when the destination is held open by a
-    # concurrent reader, leaving a transient gap during which the reader's
-    # Read() fails with "file must exist".
-    if IsValidCacheFile(path) then return; fi;
     # Atomic write: PrintTo to a .tmp file, then `mv` to the final path.
     # Prevents corrupt-cache leftovers if the process is killed mid-write.
     # Unique tmp filename per call: prevents two GAP workers from clobbering
@@ -2711,55 +2504,30 @@ for group_idx in [1..Length(GROUPS)] do
                 fi;
 
                 if h1orb.qsize = 2 then
-                    # Use the direct C_2 shortcut only when the RIGHT factor is
-                    # literally degree 2.  For MR>2, keep the C_2 orbit shortcut
-                    # but build the subgroup through the quotient homomorphisms.
-                    if MR = 2 then
-                        for h2idx in h2idxs do
-                            h2orb := H2data.orbits[h2idx];
-                            if h2orb.qsize <> 2 then continue; fi;
-                            total := total + 1;
-                            if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                                h_0 := First(GeneratorsOfGroup(H1),
-                                             g -> not (g in h1orb.K));
-                                t_0 := First(GeneratorsOfGroup(H2data.H),
-                                             g -> not (g in h2orb.K));
-                                fp := Group(Concatenation(
-                                    Filtered(GeneratorsOfGroup(h1orb.K),
-                                             g -> g <> ()),
-                                    List(Filtered(GeneratorsOfGroup(h2orb.K),
-                                                  g -> g <> ()),
-                                         g -> g^shift_R),
-                                    [h_0 * t_0^shift_R]));
-                                EmitGen(fp);
-                            fi;
-                            if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                                swap_fixed := swap_fixed + 1;
-                            fi;
-                        od;
-                    else
-                        for h2idx in h2idxs do
-                            h2orb := H2data.orbits[h2idx];
-                            if h2orb.qsize <> 2 then continue; fi;
-                            total := total + 1;
-                            if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                                EnsureHom(h1orb); EnsureHom(h2orb);
-                                isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
-                                if isoTH <> fail then
-                                    fp := _GoursatBuildFiberProduct(
-                                        H1, H2, h1orb.hom,
-                                        CompositionMapping(h2orb.hom,
-                                            ConjugatorIsomorphism(H2, shift_R^-1)),
-                                        InverseGeneralMapping(isoTH),
-                                        [1..ML], [ML+1..ML+MR]);
-                                    if fp <> fail then EmitGen(fp); fi;
-                                fi;
-                            fi;
-                            if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                                swap_fixed := swap_fixed + 1;
-                            fi;
-                        od;
-                    fi;
+                    # Optimization (2) 2026-04-28: |Aut(C_2)|=1 -> direct
+                    # construction works for all MR.
+                    for h2idx in h2idxs do
+                        h2orb := H2data.orbits[h2idx];
+                        if h2orb.qsize <> 2 then continue; fi;
+                        total := total + 1;
+                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                            h_0 := First(GeneratorsOfGroup(H1),
+                                         g -> not (g in h1orb.K));
+                            t_0 := First(GeneratorsOfGroup(H2data.H),
+                                         g -> not (g in h2orb.K));
+                            fp := Group(Concatenation(
+                                Filtered(GeneratorsOfGroup(h1orb.K),
+                                         g -> g <> ()),
+                                List(Filtered(GeneratorsOfGroup(h2orb.K),
+                                              g -> g <> ()),
+                                     g -> g^shift_R),
+                                [h_0 * t_0^shift_R]));
+                            EmitGen(fp);
+                        fi;
+                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                            swap_fixed := swap_fixed + 1;
+                        fi;
+                    od;
                     continue;
                 fi;
 
@@ -2791,7 +2559,7 @@ for group_idx in [1..Length(GROUPS)] do
                         A2_in_h1_gens := List(h2orb.A_gens,
                             b -> InducedAutomorphism(isoTH, b));
                         A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
-                        dcs := DoubleCosets(h1orb.AutQ, A2_in_h1, A1);
+                        dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
                         n_orb := Length(dcs);
                         orbit_reps_phi := List(dcs, dc -> isoTH * Representative(dc));
                     fi;
@@ -2964,7 +2732,7 @@ def predict_super_batch(groups, force=False, timeout=10800):
             rec = {
                 "m_right": inputs["m_right"],
                 "burnside_m2": 1 if inputs["burnside_m2"] else 0,
-                "output_path": to_gap(Path(job["output_path"])),
+                "output_path": to_cyg(Path(job["output_path"])),
                 "combo_header": _format_combo_header(job["combo"]),
                 "combo_str": combo_filename(job["combo"]),
                 "mode_str": job["mode"],
@@ -2982,8 +2750,8 @@ def predict_super_batch(groups, force=False, timeout=10800):
                 subs_r_g.write_text(_subs_g_text(parse_combo_file(sr)), encoding="utf-8")
                 rec["right_tg_d"] = 0
                 rec["right_tg_t"] = 0
-                rec["subs_right"] = to_gap(subs_r_g)
-                rec["cache_right"] = to_gap(cr)
+                rec["subs_right"] = to_cyg(subs_r_g)
+                rec["cache_right"] = to_cyg(cr)
             job_records.append(rec)
             flat_jobs.append({"combo": combo_filename(job["combo"]),
                               "mode": job["mode"]})
@@ -2992,8 +2760,8 @@ def predict_super_batch(groups, force=False, timeout=10800):
             "m_left": sum(d for d, _ in left_combo),
             "m_left_partition": partition_from_source(left_combo),
             "left_combo_str": combo_filename(left_combo),
-            "subs_left": to_gap(subs_l_g),
-            "cache_left": to_gap(cache_l),
+            "subs_left": to_cyg(subs_l_g),
+            "cache_left": to_cyg(cache_l),
             "jobs": job_records,
         })
 
@@ -3017,8 +2785,7 @@ def predict_super_batch(groups, force=False, timeout=10800):
     run_g = work_root / "super_run.g"
     run_g.write_text(
         SUPER_BATCH_DRIVER
-        .replace("__LOG__", to_gap(log))
-        .replace("__LIFTING_G__", to_gap(LIFTING_G))
+        .replace("__LOG__", to_cyg(log))
         .replace("__GROUPS_ARRAY__", groups_array),
         encoding="utf-8"
     )
@@ -3110,7 +2877,7 @@ def predict_batch(jobs, force=False, timeout=7200):
         record = {
             "m_right": inputs["m_right"],
             "burnside_m2": 1 if inputs["burnside_m2"] else 0,
-            "output_path": to_gap(out_path),
+            "output_path": to_cyg(out_path),
             "combo_header": _format_combo_header(job["combo"]),
             "combo_str": combo_filename(job["combo"]),
             "mode_str": job["mode"],
@@ -3128,8 +2895,8 @@ def predict_batch(jobs, force=False, timeout=7200):
             subs_r_g.write_text(_subs_g_text(parse_combo_file(sr)), encoding="utf-8")
             record["right_tg_d"] = 0
             record["right_tg_t"] = 0
-            record["subs_right"] = to_gap(subs_r_g)
-            record["cache_right"] = to_gap(cr)
+            record["subs_right"] = to_cyg(subs_r_g)
+            record["cache_right"] = to_cyg(cr)
         job_records.append(record)
 
     # Build JOBS array as a GAP record literal.
@@ -3150,23 +2917,14 @@ def predict_batch(jobs, force=False, timeout=7200):
     log = work_root / "batch.log"
     if log.exists(): log.unlink()
     run_g = work_root / "batch_run.g"
-    state_g = work_root / "state.g"
-    # Note: do NOT delete state_g here — if it exists from a prior killed run,
-    # we want to resume from it.  GAP will remove it cleanly when all jobs done.
     left_part = partition_from_source(left_combo)
-    # Checkpoint interval: 30 min default; opt-out via env CHECKPOINT_INTERVAL_MS.
-    # 0 disables checkpointing entirely.
-    chkpt_ms = int(os.environ.get("CHECKPOINT_INTERVAL_MS", "1800000"))
     run_g.write_text(
         BATCH_DRIVER
-        .replace("__LOG__", to_gap(log))
-        .replace("__LIFTING_G__", to_gap(LIFTING_G))
+        .replace("__LOG__", to_cyg(log))
         .replace("__M_LEFT__", str(first_inputs["m_left"]))
         .replace("__M_LEFT_PARTITION__", "[" + ",".join(str(d) for d in left_part) + "]")
-        .replace("__SUBS_L__", to_gap(subs_l_g))
-        .replace("__CACHE_L__", to_gap(cache_l))
-        .replace("__STATE_FILE__", to_gap(state_g))
-        .replace("__CHECKPOINT_INTERVAL_MS__", str(chkpt_ms))
+        .replace("__SUBS_L__", to_cyg(subs_l_g))
+        .replace("__CACHE_L__", to_cyg(cache_l))
         .replace("__JOBS_ARRAY__", jobs_array),
         encoding="utf-8"
     )
@@ -3177,19 +2935,8 @@ def predict_batch(jobs, force=False, timeout=7200):
     env["PATH"] = r"C:\Program Files\GAP-4.15.1\runtime\bin;" + env.get("PATH", "")
     env["CYGWIN"] = "nodosfilewarning"
     t0 = time.time()
-    # Opt 8: checkpoint-restart loop.  GAP self-monitors elapsed time and
-    # exits with a state file when it crosses CHECKPOINT_INTERVAL_MS.  We
-    # detect the state file's presence and re-invoke GAP, which reads the
-    # state on startup and resumes the pair loop.  When all jobs complete,
-    # GAP removes the state file, so the loop exits.
-    epoch = 0
     try:
-        while True:
-            epoch += 1
-            _gap_run(cmd, env, timeout, diag_dir=work_root)
-            if not state_g.exists():
-                break
-            print(f"  [resume] {work_root.name} epoch={epoch} state.g present, re-invoking GAP", flush=True)
+        _gap_run(cmd, env, timeout, diag_dir=work_root)
     except subprocess.TimeoutExpired:
         return [{"error": "batch timeout", "elapsed_s": time.time() - t0}] * len(jobs)
     elapsed_total = round(time.time() - t0, 1)
@@ -3340,20 +3087,19 @@ def predict(combo, mode="auto", emit_generators=False, output_path=None,
     run_g = work / "run.g"
     run_g.write_text(
         GAP_DRIVER
-        .replace("__LOG__", to_gap(log))
-        .replace("__LIFTING_G__", to_gap(LIFTING_G))
+        .replace("__LOG__", to_cyg(log))
         .replace("__M_LEFT__", str(inputs["m_left"]))
         .replace("__M_RIGHT__", str(inputs["m_right"]))
         .replace("__M_LEFT_PARTITION__", "[" + ",".join(str(d) for d in left_part) + "]")
         .replace("__M_RIGHT_PARTITION__", "[" + ",".join(str(d) for d in right_part) + "]")
-        .replace("__SUBS_L__", to_gap(subs_l_g))
-        .replace("__SUBS_R__", to_gap(subs_r_g) if sr else "")
-        .replace("__CACHE_L__", to_gap(cache_l))
-        .replace("__CACHE_R__", to_gap(cache_r) if cache_r else "")
+        .replace("__SUBS_L__", to_cyg(subs_l_g))
+        .replace("__SUBS_R__", to_cyg(subs_r_g) if sr else "")
+        .replace("__CACHE_L__", to_cyg(cache_l))
+        .replace("__CACHE_R__", to_cyg(cache_r) if cache_r else "")
         .replace("__TG_D__", str(inputs["right_tg"][0]) if inputs["right_tg"] else "0")
         .replace("__TG_T__", str(inputs["right_tg"][1]) if inputs["right_tg"] else "0")
         .replace("__BURNSIDE_M2__", "1" if inputs["burnside_m2"] else "0")
-        .replace("__GEN_PATH__", to_gap(gen_path) if gen_path else ""),
+        .replace("__GEN_PATH__", to_cyg(gen_path) if gen_path else ""),
         encoding="utf-8"
     )
 
