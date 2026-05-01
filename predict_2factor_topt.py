@@ -1582,8 +1582,40 @@ Print("[t+", Runtime() - batch_t0, "ms] ReconstructHData done; LEFT loaded: ",
 # determine the q-size filter).
 Print("JOBS: ", Length(JOBS), " jobs to run\n");
 
+# ---- Checkpoint-restart support (opt 8) ----
+# Long-running batches (heavy LEFTs) accumulate GAP heap pressure that slows
+# garbage collection 10-20x per pair after a few hours.  To avoid this, we
+# checkpoint after each LEFT-class iteration once `Runtime() - WORKER_START`
+# crosses CHECKPOINT_INTERVAL_MS, save state to STATE_FILE, then QUIT.  The
+# Python orchestrator detects state file presence and re-invokes GAP, which
+# reads the state on startup and resumes the pair loop from the saved index.
+STATE_FILE := "__STATE_FILE__";
+CHECKPOINT_INTERVAL_MS := __CHECKPOINT_INTERVAL_MS__;
+WORKER_START := Runtime();
+
+RESUME_JOB_IDX := 1;
+RESUME_PAIR_I := 1;
+RESUME_FP_LINES := [];
+RESUME_TOTAL_ORB := 0;
+RESUME_TOTAL_FIX := 0;
+
+if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
+    Read(STATE_FILE);
+    if IsBound(RESUME_STATE) then
+        RESUME_JOB_IDX := RESUME_STATE.job_idx;
+        RESUME_PAIR_I := RESUME_STATE.pair_i;
+        RESUME_FP_LINES := RESUME_STATE.fp_lines;
+        RESUME_TOTAL_ORB := RESUME_STATE.total_orb;
+        RESUME_TOTAL_FIX := RESUME_STATE.total_fix;
+        Print("CHECKPOINT_RESUME job_idx=", RESUME_JOB_IDX,
+              " pair_i=", RESUME_PAIR_I,
+              " fp_lines=", Length(RESUME_FP_LINES),
+              " orb=", RESUME_TOTAL_ORB, "\n");
+    fi;
+fi;
+
 # Per-job processing.
-for job_idx in [1..Length(JOBS)] do
+for job_idx in [RESUME_JOB_IDX..Length(JOBS)] do
     JOB := JOBS[job_idx];
     job_t0 := Runtime();
 
@@ -1646,7 +1678,18 @@ for job_idx in [1..Length(JOBS)] do
     H2DATA := List(H_CACHE_R, e -> ReconstructHData(e, S_MR));
 
     # ---- Goursat counting + collect generator lines for emission ----
-    fp_lines := [];
+    # Honor resume state for the resuming job; fresh start for later jobs.
+    if job_idx = RESUME_JOB_IDX then
+        fp_lines := RESUME_FP_LINES;
+        i_resume_start := RESUME_PAIR_I;
+        resume_total_orb := RESUME_TOTAL_ORB;
+        resume_total_fix := RESUME_TOTAL_FIX;
+    else
+        fp_lines := [];
+        i_resume_start := 1;
+        resume_total_orb := 0;
+        resume_total_fix := 0;
+    fi;
 
     # In burnside_m2 mode, the ordered-pair iteration visits both (a, b) and
     # (b, a) of each non-diagonal orbit-pair.  These produce S_n-conjugate fp's
@@ -1857,21 +1900,27 @@ for job_idx in [1..Length(JOBS)] do
         return rec(orbits := total, swap_fixed := swap_fixed);
     end;
 
-    TOTAL_ORB := 0;
-    TOTAL_FIX := 0;
+    TOTAL_ORB := resume_total_orb;
+    TOTAL_FIX := resume_total_fix;
     last_hb_ms := Runtime() - job_t0;
-    n_pairs_done := 0;
+    n_pairs_done := (i_resume_start - 1) * Length(H2DATA);
     n_pairs_total := Length(H1DATA_LIST) * Length(H2DATA);
-    Print("    [t+", Runtime() - job_t0, "ms] starting H1xH2 loop: ",
-          Length(H1DATA_LIST), " x ", Length(H2DATA),
-          " = ", n_pairs_total, " pairs\n");
+    if i_resume_start > 1 then
+        Print("    [t+", Runtime() - job_t0, "ms] resuming pair loop at i=",
+              i_resume_start, "/", Length(H1DATA_LIST),
+              " (", n_pairs_done, " pairs already done, orb=", TOTAL_ORB, ")\n");
+    else
+        Print("    [t+", Runtime() - job_t0, "ms] starting H1xH2 loop: ",
+              Length(H1DATA_LIST), " x ", Length(H2DATA),
+              " = ", n_pairs_total, " pairs\n");
+    fi;
     # Optimization (4) 2026-04-28: precompute shifted RIGHT once per j outside
     # the i loop.  For burnside_m2 mode, H2DATA[1] gets overwritten per-i so
     # we must compute per-pair (only 1 entry, so cheap).
     if BURNSIDE_M2 = 0 then
         H2_SHIFTED := List(H2DATA, hd -> hd.H^shift_R);
     fi;
-    for i in [1..Length(H1DATA_LIST)] do
+    for i in [i_resume_start..Length(H1DATA_LIST)] do
         H1data_j := H1DATA_LIST[i];
         H1_j := H1data_j.H;
         # For burnside_m2: override H2DATA[1] with H1data so K = K comparison works.
@@ -1898,6 +1947,28 @@ for job_idx in [1..Length(JOBS)] do
                 last_hb_ms := Runtime() - job_t0;
             fi;
         od;
+        # Checkpoint check: after completing all j for this i.  If we've been
+        # running longer than CHECKPOINT_INTERVAL_MS, save state and quit.
+        if STATE_FILE <> "" and CHECKPOINT_INTERVAL_MS > 0
+           and Runtime() - WORKER_START >= CHECKPOINT_INTERVAL_MS
+           and i < Length(H1DATA_LIST) then
+            tmp := Concatenation(STATE_FILE, ".tmp");
+            PrintTo(tmp, "RESUME_STATE := rec(\n",
+                "  job_idx := ", job_idx, ",\n",
+                "  pair_i := ", i + 1, ",\n",
+                "  total_orb := ", TOTAL_ORB, ",\n",
+                "  total_fix := ", TOTAL_FIX, ",\n",
+                "  fp_lines := ", fp_lines, "\n",
+                ");\n");
+            Exec(Concatenation("mv -f -- '", tmp, "' '", STATE_FILE, "'"));
+            Print("CHECKPOINT_PAUSE job_idx=", job_idx,
+                  " next_pair_i=", i + 1,
+                  " of=", Length(H1DATA_LIST),
+                  " orb=", TOTAL_ORB,
+                  " elapsed_ms=", Runtime() - WORKER_START, "\n");
+            LogTo();
+            QUIT;
+        fi;
     od;
 
     if BURNSIDE_M2 = 1 then
@@ -1925,6 +1996,12 @@ for job_idx in [1..Length(JOBS)] do
           " orbits=", TOTAL_ORB, " swap_fixed=", TOTAL_FIX,
           " elapsed_ms=", elapsed_ms, "\n");
 od;
+
+# All jobs done — remove the state file so the orchestrator's resume loop
+# stops re-invoking us.
+if STATE_FILE <> "" and IsExistingFile(STATE_FILE) then
+    RemoveFile(STATE_FILE);
+fi;
 
 LogTo();
 QUIT;
@@ -2970,7 +3047,13 @@ def predict_batch(jobs, force=False, timeout=7200):
     log = work_root / "batch.log"
     if log.exists(): log.unlink()
     run_g = work_root / "batch_run.g"
+    state_g = work_root / "state.g"
+    # Note: do NOT delete state_g here — if it exists from a prior killed run,
+    # we want to resume from it.  GAP will remove it cleanly when all jobs done.
     left_part = partition_from_source(left_combo)
+    # Checkpoint interval: 30 min default; opt-out via env CHECKPOINT_INTERVAL_MS.
+    # 0 disables checkpointing entirely.
+    chkpt_ms = int(os.environ.get("CHECKPOINT_INTERVAL_MS", "1800000"))
     run_g.write_text(
         BATCH_DRIVER
         .replace("__LOG__", to_cyg(log))
@@ -2978,6 +3061,8 @@ def predict_batch(jobs, force=False, timeout=7200):
         .replace("__M_LEFT_PARTITION__", "[" + ",".join(str(d) for d in left_part) + "]")
         .replace("__SUBS_L__", to_cyg(subs_l_g))
         .replace("__CACHE_L__", to_cyg(cache_l))
+        .replace("__STATE_FILE__", to_cyg(state_g))
+        .replace("__CHECKPOINT_INTERVAL_MS__", str(chkpt_ms))
         .replace("__JOBS_ARRAY__", jobs_array),
         encoding="utf-8"
     )
@@ -2988,8 +3073,19 @@ def predict_batch(jobs, force=False, timeout=7200):
     env["PATH"] = r"C:\Program Files\GAP-4.15.1\runtime\bin;" + env.get("PATH", "")
     env["CYGWIN"] = "nodosfilewarning"
     t0 = time.time()
+    # Opt 8: checkpoint-restart loop.  GAP self-monitors elapsed time and
+    # exits with a state file when it crosses CHECKPOINT_INTERVAL_MS.  We
+    # detect the state file's presence and re-invoke GAP, which reads the
+    # state on startup and resumes the pair loop.  When all jobs complete,
+    # GAP removes the state file, so the loop exits.
+    epoch = 0
     try:
-        _gap_run(cmd, env, timeout, diag_dir=work_root)
+        while True:
+            epoch += 1
+            _gap_run(cmd, env, timeout, diag_dir=work_root)
+            if not state_g.exists():
+                break
+            print(f"  [resume] {work_root.name} epoch={epoch} state.g present, re-invoking GAP", flush=True)
     except subprocess.TimeoutExpired:
         return [{"error": "batch timeout", "elapsed_s": time.time() - t0}] * len(jobs)
     elapsed_total = round(time.time() - t0, 1)
