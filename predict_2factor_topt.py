@@ -32,7 +32,7 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting")
+ROOT = Path(__file__).resolve().parent
 SN_DIR = Path(os.environ.get("PREDICT_SN_DIR", str(ROOT / "parallel_sn")))
 S18_DIR = ROOT / "parallel_s18"
 TMP = Path(os.environ.get("PREDICT_TMP_DIR",
@@ -58,6 +58,11 @@ def to_cyg(p) -> str:
     return s
 
 
+def to_gap(p) -> str:
+    """Windows-style path syntax for paths embedded inside GAP source."""
+    return str(p).replace("\\", "/")
+
+
 def ensure_lifting_workspace():
     """Build lifting.ws workspace if it's missing or stale.
     Saves ~9 seconds per GAP invocation (12.9s cold -> 3.6s with `-L ws`)."""
@@ -68,8 +73,8 @@ def ensure_lifting_workspace():
           flush=True)
     save_g = ROOT / "_build_lifting_workspace.g"
     save_g.write_text(
-        f'Read("{str(LIFTING_G).replace(chr(92), chr(47))}");\n'
-        f'SaveWorkspace("{to_cyg(LIFTING_WS)}");\n'
+        f'Read("{to_gap(LIFTING_G)}");\n'
+        f'SaveWorkspace("{to_gap(LIFTING_WS)}");\n'
         f'QUIT;\n', encoding="utf-8")
     cmd = [GAP_BASH, "--login", "-c",
            f'cd "{GAP_HOME}" && ./gap.exe -q -o 0 "{to_cyg(save_g)}"']
@@ -358,7 +363,7 @@ SafeSub := function(G, gens)
 end;
 
 # Goursat fiber product builder (from lifting_algorithm.g).
-if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
+if not IsBound(_GoursatBuildFiberProduct) then Read("__LIFTING_G__"); fi;
 
 # Reconstruct H-side data with Aut(Q) and induced auto generators from a
 # cached entry.  Cache shape: rec(H_gens, N_H_gens, orbits := [rec(K_H_gens,
@@ -903,33 +908,60 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
             continue;
         fi;
 
-        # |Q| = 2 fast path: |Aut(C_2)|=1 so direct <K1, K2^shift, h_0*t_0^shift>
-        # construction works for ANY MR.  Optimization (2) 2026-04-28: generalized
-        # from MR=2-only to all MR.
+        # |Q| = 2 fast path: RIGHT is C_2 directly.  For larger RIGHT
+        # degrees, build through the quotient homomorphisms; the direct
+        # generator shortcut can collapse distinct MR>2 quotient pairs.
         if h1orb.qsize = 2 then
-            for h2idx in h2idxs do
-                if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
-                total := total + 1;
-                h2orb := H2data.orbits[h2idx];
-                if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                    if GEN_FILE_OPEN then
-                        h_0 := First(GeneratorsOfGroup(H1),
-                                     g -> not (g in h1orb.K));
-                        t_0 := First(GeneratorsOfGroup(H2data.H),
-                                     g -> not (g in h2orb.K));
-                        fp := Group(Concatenation(
-                            Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
-                            List(Filtered(GeneratorsOfGroup(h2orb.K),
-                                          g -> g <> ()),
-                                 g -> g^shift_R),
-                            [h_0 * t_0^shift_R]));
-                        EmitGenerators(fp);
+            if MR = 2 then
+                for h2idx in h2idxs do
+                    if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
+                    total := total + 1;
+                    h2orb := H2data.orbits[h2idx];
+                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                        if GEN_FILE_OPEN then
+                            h_0 := First(GeneratorsOfGroup(H1),
+                                         g -> not (g in h1orb.K));
+                            t_0 := First(GeneratorsOfGroup(H2data.H),
+                                         g -> not (g in h2orb.K));
+                            fp := Group(Concatenation(
+                                Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
+                                List(Filtered(GeneratorsOfGroup(h2orb.K),
+                                              g -> g <> ()),
+                                     g -> g^shift_R),
+                                [h_0 * t_0^shift_R]));
+                            EmitGenerators(fp);
+                        fi;
                     fi;
-                fi;
-                if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                    swap_fixed := swap_fixed + 1;
-                fi;
-            od;
+                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                        swap_fixed := swap_fixed + 1;
+                    fi;
+                od;
+            else
+                for h2idx in h2idxs do
+                    if H2data.orbits[h2idx].qsize <> 2 then continue; fi;
+                    total := total + 1;
+                    h2orb := H2data.orbits[h2idx];
+                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                        EnsureHom(h1orb); EnsureHom(h2orb);
+                        if GEN_FILE_OPEN then
+                            isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
+                            if isoTH <> fail then
+                                fp := _GoursatBuildFiberProduct(
+                                    H1, H2,
+                                    h1orb.hom,
+                                    CompositionMapping(h2orb.hom,
+                                        ConjugatorIsomorphism(H2, shift_R^-1)),
+                                    InverseGeneralMapping(isoTH),
+                                    [1..ML], [ML+1..ML+MR]);
+                                if fp <> fail then EmitGenerators(fp); fi;
+                            fi;
+                        fi;
+                    fi;
+                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                        swap_fixed := swap_fixed + 1;
+                    fi;
+                od;
+            fi;
             continue;
         fi;
 
@@ -961,7 +993,10 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                 # math composition), α' in Aut(h1.Q).  The action α o phi o β^-1
                 # (α in A1 = <h1.A_gens>, β in A2 = <h2.A_gens>) becomes
                 # α' -> α α' β'^-1 with β' = isoTH o β o isoTH^-1 in Aut(h1.Q).
-                # Orbits = double cosets A1 \ Aut(h1.Q) / A2_in_h1.
+                # GAP mapping multiplication applies the left map first, so
+                # target-side automorphisms act on r from the right and
+                # source-side automorphisms act from the left after transport.
+                # Orbits = double cosets A2_in_h1 \ Aut(h1.Q) / A1.
                 # Bench-validated 5.4x avg, 22-68x on |Aut|>=1152 buckets, 0
                 # mismatches across 21,647 verified pairs.
                 A1 := SafeSub(h1orb.AutQ, h1orb.A_gens);
@@ -977,7 +1012,7 @@ ProcessPair := function(H1data, H2data, H2_idx_in_R)
                 A2_in_h1_gens := List(h2orb.A_gens,
                     b -> InducedAutomorphism(isoTH, b));
                 A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
-                dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
+                dcs := DoubleCosets(h1orb.AutQ, A2_in_h1, A1);
                 n_orb := Length(dcs);
                 # GAP composition: f * g = "apply f first, then g" = standard g o f.
                 # Orbit rep phi_i = standard Rep(dcs[i]) o isoTH = GAP isoTH * Rep(dcs[i]).
@@ -1107,7 +1142,7 @@ LogTo("__LOG__");
 SizeScreen([100000, 24]);   # disable line wrapping in output
 
 # Path to lifting_algorithm.g for _GoursatBuildFiberProduct.
-if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
+if not IsBound(_GoursatBuildFiberProduct) then Read("__LIFTING_G__"); fi;
 
 # Common helpers (same as GAP_DRIVER).
 ConjAction := function(K, g) return K^g; end;
@@ -1710,30 +1745,54 @@ for job_idx in [1..Length(JOBS)] do
             fi;
 
             if h1orb.qsize = 2 then
-                # Optimization (2) 2026-04-28: |Aut(C_2)|=1 so the direct
-                # <K1, K2^shift, h_0*t_0^shift> construction works for ANY MR
-                # (was previously only used for MR=2).
-                for h2idx in h2idxs do
-                    h2orb := H2data.orbits[h2idx];
-                    if h2orb.qsize <> 2 then continue; fi;
-                    total := total + 1;
-                    if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                        h_0 := First(GeneratorsOfGroup(H1),
-                                     g -> not (g in h1orb.K));
-                        t_0 := First(GeneratorsOfGroup(H2data.H),
-                                     g -> not (g in h2orb.K));
-                        fp := Group(Concatenation(
-                            Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
-                            List(Filtered(GeneratorsOfGroup(h2orb.K),
-                                          g -> g <> ()),
-                                 g -> g^shift_R),
-                            [h_0 * t_0^shift_R]));
-                        EmitGen(fp);
-                    fi;
-                    if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                        swap_fixed := swap_fixed + 1;
-                    fi;
-                od;
+                # Use the direct C_2 shortcut only when the RIGHT factor is
+                # literally degree 2.  For MR>2, keep the C_2 orbit shortcut
+                # but build the subgroup through the quotient homomorphisms.
+                if MR = 2 then
+                    for h2idx in h2idxs do
+                        h2orb := H2data.orbits[h2idx];
+                        if h2orb.qsize <> 2 then continue; fi;
+                        total := total + 1;
+                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                            h_0 := First(GeneratorsOfGroup(H1),
+                                         g -> not (g in h1orb.K));
+                            t_0 := First(GeneratorsOfGroup(H2data.H),
+                                         g -> not (g in h2orb.K));
+                            fp := Group(Concatenation(
+                                Filtered(GeneratorsOfGroup(h1orb.K), g -> g <> ()),
+                                List(Filtered(GeneratorsOfGroup(h2orb.K),
+                                              g -> g <> ()),
+                                     g -> g^shift_R),
+                                [h_0 * t_0^shift_R]));
+                            EmitGen(fp);
+                        fi;
+                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                            swap_fixed := swap_fixed + 1;
+                        fi;
+                    od;
+                else
+                    for h2idx in h2idxs do
+                        h2orb := H2data.orbits[h2idx];
+                        if h2orb.qsize <> 2 then continue; fi;
+                        total := total + 1;
+                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                            EnsureHom(h1orb); EnsureHom(h2orb);
+                            isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
+                            if isoTH <> fail then
+                                fp := _GoursatBuildFiberProduct(
+                                    H1, H2, h1orb.hom,
+                                    CompositionMapping(h2orb.hom,
+                                        ConjugatorIsomorphism(H2, shift_R^-1)),
+                                    InverseGeneralMapping(isoTH),
+                                    [1..ML], [ML+1..ML+MR]);
+                                if fp <> fail then EmitGen(fp); fi;
+                            fi;
+                        fi;
+                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                            swap_fixed := swap_fixed + 1;
+                        fi;
+                    od;
+                fi;
                 continue;
             fi;
 
@@ -1766,7 +1825,7 @@ for job_idx in [1..Length(JOBS)] do
                     A2_in_h1_gens := List(h2orb.A_gens,
                         b -> InducedAutomorphism(isoTH, b));
                     A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
-                    dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
+                    dcs := DoubleCosets(h1orb.AutQ, A2_in_h1, A1);
                     n_orb := Length(dcs);
                     orbit_reps_phi := List(dcs, dc -> isoTH * Representative(dc));
                 fi;
@@ -1925,7 +1984,7 @@ SUPER_BATCH_DRIVER = r"""
 LogTo("__LOG__");
 SizeScreen([100000, 24]);
 
-if not IsBound(_GoursatBuildFiberProduct) then Read("C:/Users/jeffr/Downloads/Lifting/lifting_algorithm.g"); fi;
+if not IsBound(_GoursatBuildFiberProduct) then Read("__LIFTING_G__"); fi;
 
 ConjAction := function(K, g) return K^g; end;
 
@@ -2525,30 +2584,55 @@ for group_idx in [1..Length(GROUPS)] do
                 fi;
 
                 if h1orb.qsize = 2 then
-                    # Optimization (2) 2026-04-28: |Aut(C_2)|=1 -> direct
-                    # construction works for all MR.
-                    for h2idx in h2idxs do
-                        h2orb := H2data.orbits[h2idx];
-                        if h2orb.qsize <> 2 then continue; fi;
-                        total := total + 1;
-                        if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
-                            h_0 := First(GeneratorsOfGroup(H1),
-                                         g -> not (g in h1orb.K));
-                            t_0 := First(GeneratorsOfGroup(H2data.H),
-                                         g -> not (g in h2orb.K));
-                            fp := Group(Concatenation(
-                                Filtered(GeneratorsOfGroup(h1orb.K),
-                                         g -> g <> ()),
-                                List(Filtered(GeneratorsOfGroup(h2orb.K),
-                                              g -> g <> ()),
-                                     g -> g^shift_R),
-                                [h_0 * t_0^shift_R]));
-                            EmitGen(fp);
-                        fi;
-                        if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
-                            swap_fixed := swap_fixed + 1;
-                        fi;
-                    od;
+                    # Use the direct C_2 shortcut only when the RIGHT factor is
+                    # literally degree 2.  For MR>2, keep the C_2 orbit shortcut
+                    # but build the subgroup through the quotient homomorphisms.
+                    if MR = 2 then
+                        for h2idx in h2idxs do
+                            h2orb := H2data.orbits[h2idx];
+                            if h2orb.qsize <> 2 then continue; fi;
+                            total := total + 1;
+                            if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                                h_0 := First(GeneratorsOfGroup(H1),
+                                             g -> not (g in h1orb.K));
+                                t_0 := First(GeneratorsOfGroup(H2data.H),
+                                             g -> not (g in h2orb.K));
+                                fp := Group(Concatenation(
+                                    Filtered(GeneratorsOfGroup(h1orb.K),
+                                             g -> g <> ()),
+                                    List(Filtered(GeneratorsOfGroup(h2orb.K),
+                                                  g -> g <> ()),
+                                         g -> g^shift_R),
+                                    [h_0 * t_0^shift_R]));
+                                EmitGen(fp);
+                            fi;
+                            if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                                swap_fixed := swap_fixed + 1;
+                            fi;
+                        od;
+                    else
+                        for h2idx in h2idxs do
+                            h2orb := H2data.orbits[h2idx];
+                            if h2orb.qsize <> 2 then continue; fi;
+                            total := total + 1;
+                            if BURNSIDE_M2 = 0 or h2idx >= h1_orb_idx then
+                                EnsureHom(h1orb); EnsureHom(h2orb);
+                                isoTH := IsomorphismGroups(h2orb.Q, h1orb.Q);
+                                if isoTH <> fail then
+                                    fp := _GoursatBuildFiberProduct(
+                                        H1, H2, h1orb.hom,
+                                        CompositionMapping(h2orb.hom,
+                                            ConjugatorIsomorphism(H2, shift_R^-1)),
+                                        InverseGeneralMapping(isoTH),
+                                        [1..ML], [ML+1..ML+MR]);
+                                    if fp <> fail then EmitGen(fp); fi;
+                                fi;
+                            fi;
+                            if BURNSIDE_M2 = 1 and h1orb.K = h2orb.K then
+                                swap_fixed := swap_fixed + 1;
+                            fi;
+                        od;
+                    fi;
                     continue;
                 fi;
 
@@ -2580,7 +2664,7 @@ for group_idx in [1..Length(GROUPS)] do
                         A2_in_h1_gens := List(h2orb.A_gens,
                             b -> InducedAutomorphism(isoTH, b));
                         A2_in_h1 := SafeSub(h1orb.AutQ, A2_in_h1_gens);
-                        dcs := DoubleCosets(h1orb.AutQ, A1, A2_in_h1);
+                        dcs := DoubleCosets(h1orb.AutQ, A2_in_h1, A1);
                         n_orb := Length(dcs);
                         orbit_reps_phi := List(dcs, dc -> isoTH * Representative(dc));
                     fi;
@@ -2753,7 +2837,7 @@ def predict_super_batch(groups, force=False, timeout=10800):
             rec = {
                 "m_right": inputs["m_right"],
                 "burnside_m2": 1 if inputs["burnside_m2"] else 0,
-                "output_path": to_cyg(Path(job["output_path"])),
+                "output_path": to_gap(Path(job["output_path"])),
                 "combo_header": _format_combo_header(job["combo"]),
                 "combo_str": combo_filename(job["combo"]),
                 "mode_str": job["mode"],
@@ -2771,8 +2855,8 @@ def predict_super_batch(groups, force=False, timeout=10800):
                 subs_r_g.write_text(_subs_g_text(parse_combo_file(sr)), encoding="utf-8")
                 rec["right_tg_d"] = 0
                 rec["right_tg_t"] = 0
-                rec["subs_right"] = to_cyg(subs_r_g)
-                rec["cache_right"] = to_cyg(cr)
+                rec["subs_right"] = to_gap(subs_r_g)
+                rec["cache_right"] = to_gap(cr)
             job_records.append(rec)
             flat_jobs.append({"combo": combo_filename(job["combo"]),
                               "mode": job["mode"]})
@@ -2781,8 +2865,8 @@ def predict_super_batch(groups, force=False, timeout=10800):
             "m_left": sum(d for d, _ in left_combo),
             "m_left_partition": partition_from_source(left_combo),
             "left_combo_str": combo_filename(left_combo),
-            "subs_left": to_cyg(subs_l_g),
-            "cache_left": to_cyg(cache_l),
+            "subs_left": to_gap(subs_l_g),
+            "cache_left": to_gap(cache_l),
             "jobs": job_records,
         })
 
@@ -2806,7 +2890,8 @@ def predict_super_batch(groups, force=False, timeout=10800):
     run_g = work_root / "super_run.g"
     run_g.write_text(
         SUPER_BATCH_DRIVER
-        .replace("__LOG__", to_cyg(log))
+        .replace("__LOG__", to_gap(log))
+        .replace("__LIFTING_G__", to_gap(LIFTING_G))
         .replace("__GROUPS_ARRAY__", groups_array),
         encoding="utf-8"
     )
@@ -2898,7 +2983,7 @@ def predict_batch(jobs, force=False, timeout=7200):
         record = {
             "m_right": inputs["m_right"],
             "burnside_m2": 1 if inputs["burnside_m2"] else 0,
-            "output_path": to_cyg(out_path),
+            "output_path": to_gap(out_path),
             "combo_header": _format_combo_header(job["combo"]),
             "combo_str": combo_filename(job["combo"]),
             "mode_str": job["mode"],
@@ -2916,8 +3001,8 @@ def predict_batch(jobs, force=False, timeout=7200):
             subs_r_g.write_text(_subs_g_text(parse_combo_file(sr)), encoding="utf-8")
             record["right_tg_d"] = 0
             record["right_tg_t"] = 0
-            record["subs_right"] = to_cyg(subs_r_g)
-            record["cache_right"] = to_cyg(cr)
+            record["subs_right"] = to_gap(subs_r_g)
+            record["cache_right"] = to_gap(cr)
         job_records.append(record)
 
     # Build JOBS array as a GAP record literal.
@@ -2941,11 +3026,12 @@ def predict_batch(jobs, force=False, timeout=7200):
     left_part = partition_from_source(left_combo)
     run_g.write_text(
         BATCH_DRIVER
-        .replace("__LOG__", to_cyg(log))
+        .replace("__LOG__", to_gap(log))
+        .replace("__LIFTING_G__", to_gap(LIFTING_G))
         .replace("__M_LEFT__", str(first_inputs["m_left"]))
         .replace("__M_LEFT_PARTITION__", "[" + ",".join(str(d) for d in left_part) + "]")
-        .replace("__SUBS_L__", to_cyg(subs_l_g))
-        .replace("__CACHE_L__", to_cyg(cache_l))
+        .replace("__SUBS_L__", to_gap(subs_l_g))
+        .replace("__CACHE_L__", to_gap(cache_l))
         .replace("__JOBS_ARRAY__", jobs_array),
         encoding="utf-8"
     )
@@ -3108,19 +3194,20 @@ def predict(combo, mode="auto", emit_generators=False, output_path=None,
     run_g = work / "run.g"
     run_g.write_text(
         GAP_DRIVER
-        .replace("__LOG__", to_cyg(log))
+        .replace("__LOG__", to_gap(log))
+        .replace("__LIFTING_G__", to_gap(LIFTING_G))
         .replace("__M_LEFT__", str(inputs["m_left"]))
         .replace("__M_RIGHT__", str(inputs["m_right"]))
         .replace("__M_LEFT_PARTITION__", "[" + ",".join(str(d) for d in left_part) + "]")
         .replace("__M_RIGHT_PARTITION__", "[" + ",".join(str(d) for d in right_part) + "]")
-        .replace("__SUBS_L__", to_cyg(subs_l_g))
-        .replace("__SUBS_R__", to_cyg(subs_r_g) if sr else "")
-        .replace("__CACHE_L__", to_cyg(cache_l))
-        .replace("__CACHE_R__", to_cyg(cache_r) if cache_r else "")
+        .replace("__SUBS_L__", to_gap(subs_l_g))
+        .replace("__SUBS_R__", to_gap(subs_r_g) if sr else "")
+        .replace("__CACHE_L__", to_gap(cache_l))
+        .replace("__CACHE_R__", to_gap(cache_r) if cache_r else "")
         .replace("__TG_D__", str(inputs["right_tg"][0]) if inputs["right_tg"] else "0")
         .replace("__TG_T__", str(inputs["right_tg"][1]) if inputs["right_tg"] else "0")
         .replace("__BURNSIDE_M2__", "1" if inputs["burnside_m2"] else "0")
-        .replace("__GEN_PATH__", to_cyg(gen_path) if gen_path else ""),
+        .replace("__GEN_PATH__", to_gap(gen_path) if gen_path else ""),
         encoding="utf-8"
     )
 

@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting")
+ROOT = Path(__file__).resolve().parent
 GAP_BASH = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
 GAP_HOME = "/cygdrive/c/Program Files/GAP-4.15.1/runtime/opt/gap-4.15.1"
 
@@ -42,6 +42,11 @@ def to_cyg(p) -> str:
     if len(s) >= 2 and s[1] == ":":
         return f"/cygdrive/{s[0].lower()}{s[2:]}"
     return s
+
+
+def to_gap(p) -> str:
+    """Windows-style path syntax for paths embedded inside GAP source."""
+    return str(p).replace("\\", "/")
 
 
 def fpf_partitions(n):
@@ -203,11 +208,11 @@ def run_bootstrap_batch(entries, tmp_dir):
     log = tmp_dir / "bootstrap.log"
     if log.exists(): log.unlink()
     batch_str = "[" + ",".join(
-        f'[{d},{t},"{to_cyg(p)}"]' for d, t, p in entries) + "]"
+        f'[{d},{t},"{to_gap(p)}"]' for d, t, p in entries) + "]"
     run_g = tmp_dir / "bootstrap_run.g"
     run_g.write_text(
         BOOTSTRAP_TEMPLATE
-        .replace("__LOG__", to_cyg(log))
+        .replace("__LOG__", to_gap(log))
         .replace("__BATCH__", batch_str),
         encoding="utf-8"
     )
@@ -685,22 +690,26 @@ def main():
     # ---- Per-n finalization ----
     def finalize_n(state):
         n = state["n"]
-        # Re-count bootstrap files (they were skipped from per-combo loop).
+        # Re-count all complete combo files from disk.  This keeps resume runs
+        # honest: skipped files are part of the correctness total even though
+        # they did not contribute to this invocation's per-combo task results.
+        total_combos = 0
+        total_fpf = 0
         for partition in state["partitions"]:
             part_dir = state["n_dir"] / part_dirname(partition)
             for combo in combos_for_partition(partition, num_transitive):
-                if route(combo) != "bootstrap": continue
                 output_path = part_dir / f"{combo_filename(combo)}.g"
-                if output_path.exists():
-                    m = re.search(r"^# deduped:\s*(\d+)",
-                                   output_path.read_text(encoding="utf-8"),
-                                   re.MULTILINE)
-                    state["n_combos"] += 1
-                    state["n_fpf"] += int(m.group(1)) if m else 0
+                if not output_path.exists() or not is_complete_combo_file(output_path):
+                    continue
+                m = re.search(r"^# deduped:\s*(\d+)",
+                               output_path.read_text(encoding="utf-8"),
+                               re.MULTILINE)
+                total_combos += 1
+                total_fpf += int(m.group(1)) if m else 0
 
         wall_s = time.time() - state["n_dispatch_t0"]
-        n_combos = state["n_combos"]
-        n_fpf = state["n_fpf"]
+        n_combos = total_combos
+        n_fpf = total_fpf
         n_seconds = state["n_seconds"]
         if n in A000638 and n - 1 in A000638:
             expected_fpf = A000638[n] - A000638[n - 1]
@@ -838,7 +847,7 @@ def get_num_transitive_groups(n_max, work_dir):
     log = work_dir / "_num_transitive.log"
     run_g = work_dir / "_num_transitive_run.g"
     run_g.write_text(
-        f'LogTo("{to_cyg(log)}");\n'
+        f'LogTo("{to_gap(log)}");\n'
         f'for d in [1..{n_max}] do\n'
         f'    Print("NRT ", d, " ", NrTransitiveGroups(d), "\\n");\n'
         f'od;\n'
