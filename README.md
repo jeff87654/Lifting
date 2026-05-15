@@ -4,8 +4,8 @@ Computation of the conjugacy classes of subgroups of the symmetric group `S_n`,
 via a Holt-style chief-series lifting engine combined with an orbit-partition
 decomposition and Goursat / wreath predictors for the hard cases.
 
-The build extends [OEIS A000638](https://oeis.org/A000638) by two terms:
-`a(19)` and `a(20)` are first independently computed here.
+The build extends [OEIS A000638](https://oeis.org/A000638) by two terms: `a(19)`
+and `a(20)` are first independently computed here.
 
 ## Result
 
@@ -17,115 +17,91 @@ The build extends [OEIS A000638](https://oeis.org/A000638) by two terms:
 | 19 | **16,745,233**                   | this build (FPF(19) = 9,470,582)      |
 | 20 | **104,918,696**                  | this build (FPF(20) = 88,173,463)     |
 
-Both new totals are obtained from the recurrence
-`a(n) = FPF(n) + a(n-1)`, where `FPF(n)` is the number of fixed-point-free
-subgroup classes of `S_n` produced by the build. Every subgroup class of
-`S_{n-1}` extends to `S_n` by adjoining `{n}` as a trivial fixed point, so
-the only new classes at step `n` are the FPF ones.
+Both new totals follow from the recurrence `a(n) = FPF(n) + a(n-1)`, where
+`FPF(n)` is the number of fixed-point-free subgroup classes of `S_n`. Every
+subgroup class of `S_{n-1}` lifts to `S_n` by adjoining `{n}` as a trivial
+fixed point, so the only genuinely new classes at step `n` are the FPF ones.
+That is what the build computes.
 
 ## Method
 
 ### 1. Orbit-partition decomposition
 
-A subgroup `H ≤ S_n` partitions `{1,…,n}` into its orbits. Two subgroups
-related by relabelling lie in the same conjugacy class of `S_n`, so the
-ambient enumeration is organised by:
+A subgroup `H ≤ S_n` partitions `{1, …, n}` into its orbits. Two subgroups
+related by relabelling lie in the same `S_n`-conjugacy class, so we organise
+the enumeration around two nested choices.
 
-1. **Partition** `λ = (d_1, …, d_k)` of `n` with `d_i ≥ 2` — the multiset of
-   orbit sizes of an FPF subgroup. Parts of size `1` correspond to fixed
-   points and are handled by the recurrence above.
-2. **Combo** `c = ((d_1, t_1), …, (d_k, t_k))` — one transitive group
-   `T(d_i, t_i)` per orbit, chosen from GAP's transitive group library.
-   The `T(d_i, t_i)` is the projection of `H` onto the `i`-th orbit, i.e.
-   the smallest transitive group containing that projection.
+First, the *partition* `λ = (d_1, …, d_k)` of `n` with `d_i ≥ 2` records the
+multiset of orbit sizes of an FPF subgroup. Parts of size 1 correspond to
+fixed points and are absorbed by the recurrence above.
 
-For each combo, `H` is realised as a *subdirect product* of the projections,
-sitting inside the direct product `P = T(d_1,t_1) × ⋯ × T(d_k,t_k)` embedded
-blockwise into `S_n`. The job per combo is to enumerate FPF subdirect
-products up to conjugacy in `S_n`.
+Second, the *combo* `c = ((d_1, t_1), …, (d_k, t_k))` fixes one transitive
+group `T(d_i, t_i)` per orbit, drawn from GAP's transitive group library.
+`T(d_i, t_i)` is the smallest transitive group containing the projection of
+`H` onto its `i`-th orbit. Given a combo, `H` sits as a subdirect product
+inside the direct product `P = T(d_1, t_1) × ⋯ × T(d_k, t_k)`, embedded
+blockwise into `S_n`. The per-combo job is therefore to enumerate the FPF
+subdirect products of `P` up to `S_n`-conjugacy.
 
-`build_sn_topt.py` is the orchestrator. It enumerates partitions, then for
-each partition iterates the multisets of `t`-indices per repeated degree
-(`combos_for_partition`), and dispatches each combo to the appropriate
-backend.
+`build_sn_topt.py` is the orchestrator. It walks partitions, then walks the
+multisets of `t`-indices per repeated degree, and dispatches each combo to
+the cheapest backend that applies — closed-form fast paths when `P` has a
+particularly nice structure, a two-factor Goursat predictor for combos that
+admit a clean `L × R` split, and a wreath predictor for the single-species
+`m ≥ 3` case.
 
-### 2. Routing
+### 2. Two-factor (Goursat) predictor
 
-`build_sn_topt.py:route()` picks the cheapest method that applies:
+`predict_2factor_topt.py` reduces a `k`-block combo to a two-block product
+`P = L × R`, choosing the split to minimise work (in distinguished mode the
+unique-multiplicity species becomes `R`). Goursat's lemma then classifies
+subdirect products `H ≤ L × R` as triples `(N_L, N_R, φ)` with `N_L ◁ L`,
+`N_R ◁ R`, and `φ: L/N_L → R/N_R` an isomorphism. Up to the relevant
+normalisers, FPF subgroups of `L × R` correspond to these triples modulo the
+diagonal `Aut`-action on the shared quotient.
 
-| Route                  | When                                                                 | Backend                                                                 |
-|------------------------|----------------------------------------------------------------------|-------------------------------------------------------------------------|
-| `bootstrap`            | `len(combo) = 1`                                                     | Write generators of `T(d,t)` directly.                                  |
-| `c2_fast`              | Partition is all 2's (so `P = C_2^k`)                                | `GF(2)` linear-algebra subspace enumeration up to `GL_k(F_2) ≀ S_k`.    |
-| `bd8_fast`             | Combo is `[4,3]^k` (so `P = D_8^k`)                                  | Frattini-factor enumeration in `b_d8.g`.                                |
-| `elemab_fast`          | Combo is `[(d,t)]^k` with `T(d,t)` elementary abelian                | `b_elemab_g.g` — `GL_m(F_p) ≀ S_k` orbit enumeration.                   |
-| `distinguished`        | One species (= one `(d,t)` value) has multiplicity 1                 | 2-factor Goursat in `predict_2factor_topt.py --mode distinguished`.     |
-| `holt_split`           | ≥ 2 distinct species                                                 | 2-factor Goursat with cluster split.                                    |
-| `burnside_m2`          | Single species, multiplicity 2                                       | Burnside `m=2` symmetric Goursat.                                       |
-| `wreath_ra`            | Single species, multiplicity `m ≥ 3`, `n < 16`                       | `predict_full_general_wreath.py` — materialize + dedup in `N_T ≀ S_m`. |
-| `wreath_via_2factor`   | Single species, multiplicity `m ≥ 3`, `n ≥ 16`                       | Two-pass: 2-factor emit + wreath bucket/RA dedup.                       |
+In practice the predictor pulls the FPF subgroups of `L` and `R` from the
+cached per-combo files for smaller `m`, buckets them by normal-quotient
+structure, and shares a per-LEFT cache of precomputed normal subgroups,
+quotients, and `Aut(Q)` data across all the right-side jobs that follow.
+That cache plus a tight filter restricting candidate quotients to those the
+right side can actually produce is what makes the predictor competitive on
+combos with large left-side lattices.
 
-The fast paths (`c2_fast`, `bd8_fast`, `elemab_fast`) fall through to the
-generic routes on failure, so correctness never depends on them succeeding.
+### 3. Wreath predictor
 
-### 3. Two-factor (Goursat) predictor
+`predict_full_general_wreath.py` handles the single-species case
+`P = T(d, t)^m` for `m ≥ 3`. The natural ambient group for conjugacy is
+`W = N_{S_d}(T) ≀ S_m`, which respects the block structure and is vastly
+smaller than `S_n`. The predictor generates candidate FPF subgroups as
+`Aut(P)`-orbits (optionally bootstrapped from a two-factor candidate list),
+buckets them by cheap invariants — order, refined `Aut(Q)`-bucket, block
+permutation signature — and then runs `RepresentativeAction` tests *inside
+`W`* to deduplicate. A block-cycletype refinement splits `C_2^k` buckets
+that would otherwise collide.
 
-`predict_2factor_topt.py` reduces a `k`-block combo to a 2-block product
-`P = L × R` (the split chosen to minimise work; for distinguished mode the
-unique-multiplicity species is `R`). Subdirect products `H ≤ L × R` are
-classified by Goursat's lemma as triples `(N_L, N_R, φ)` where
-`N_L ◁ L`, `N_R ◁ R`, and `φ: L/N_L → R/N_R` is an isomorphism; up to the
-respective normalizers, the FPF subgroups of `L × R` correspond to these
-triples modulo the diagonal `Aut`-action on the shared quotient `Q`.
+### 4. Chief-series lifting core
 
-The implementation pulls FPF subgroups of `L` and `R` from cached per-combo
-files (`parallel_sn_topt/<m>/…/<sub-combo>.g` for `m < n`), buckets them by
-their normal-quotient structure, and uses a shared per-LEFT **H-cache** of
-precomputed normal-subgroup / quotient / `Aut(Q)` data. A **qfree3** filter
-("Q-free, version 3") restricts the candidate quotients `Q` to those that
-can actually appear from the RIGHT side, which is the largest single win
-for combos with large LEFT lattices.
-
-### 4. Wreath predictor
-
-`predict_full_general_wreath.py` handles `P = T(d,t)^m` with `m ≥ 3` of one
-species. The ambient group for conjugacy is `W = N_{S_d}(T) ≀ S_m`, which is
-vastly smaller than `S_n` and respects the block structure. The predictor:
-
-1. Generates candidate FPF subgroups as `Aut(P)`-orbits, optionally bootstrapped
-   from a 2-factor candidate file (`wreath_via_2factor` route).
-2. Buckets candidates by cheap invariants (order, refined `Aut(Q)`-bucket,
-   block-permutation signature).
-3. Within each bucket performs `RepresentativeAction` tests *in `W`*, not in
-   `S_n`. The "block cycletype" invariant splits `C_2^k` buckets that would
-   otherwise collide.
-
-### 5. Chief-series lifting core
-
-Underlying both predictors is the chief-series lifting machinery in
-`lifting_algorithm.g`, an implementation of Holt's algorithm
-(Holt, *Enumerating subgroups of the symmetric group*, 2010). Given a parent
-`P` and a target subdirect projection, it:
-
-1. Builds a chief series for `P` with coprime layers reordered first
-   (`RefinedChiefSeries`).
-2. Loads (or computes) the conjugacy classes of subgroups of the
-   trivial-Fitting top `P/L`.
-3. Lifts class representatives layer-by-layer. Each layer `M/N` is realised
-   as an `F_p`-module; complement enumeration uses
-   `H^1(S/M, M/N)` cocycle orbits under the relevant normalizer
-   (`h1_action.g`, `modules.g`) rather than naive subgroup enumeration.
-4. Filters non-FPF survivors out of each layer (early termination) and
-   deduplicates surviving classes by normalizer action.
+Underneath both predictors sits the chief-series lifting machinery in
+`lifting_algorithm.g`, an implementation of Holt's algorithm (*Enumerating
+subgroups of the symmetric group*, 2010). Given a parent `P` and a target
+subdirect projection, it builds a chief series for `P` with coprime layers
+brought to the front, loads the subgroup classes of the trivial-Fitting top
+`P/L` (computed once and cached), and then lifts those representatives down
+the series one elementary-abelian layer at a time. Each layer `M/N` is
+realised as an `F_p`-module, and complement enumeration goes through
+`H^1(S/M, M/N)` cocycle orbits under the relevant normaliser — the orbital
+machinery in `h1_action.g` and `modules.g` — rather than naive subgroup
+enumeration. Survivors that aren't FPF are filtered at every layer for
+early termination; what remains is deduplicated by normaliser action.
 
 `lifting_method_fast_v2.g` is an older small-`n` driver that exposes the
-same engine via `FindFPFClassesForPartition`; the production pipeline drives
+same engine via `FindFPFClassesForPartition`. The production pipeline drives
 `lifting_algorithm.g` directly through the Python predictors.
 
-### 6. Output format
+### 5. Output format
 
-Each completed combo writes a single file
-`parallel_sn_<n>/<partition>/<combo>.g`:
+Each completed combo writes one file at `parallel_sn_<n>/<partition>/<combo>.g`:
 
 ```
 # combo: [ [d_1, t_1], [d_2, t_2], ... ]
@@ -137,9 +113,10 @@ Each completed combo writes a single file
 ...
 ```
 
-Each `[…]` line is a GAP permutation-generator list for one conjugacy class
-representative. The `# deduped: N` header is the authoritative class count;
-the orchestrator reads it for both progress accounting and integrity checks.
+Each bracketed line is a GAP permutation-generator list for one conjugacy
+class representative. The `# deduped: N` header is the authoritative class
+count; the orchestrator reads it for both progress accounting and integrity
+checks during resume.
 
 ## Reproducing a result
 
@@ -173,22 +150,28 @@ python sum_fpf_s20.py          # 88,173,463
 ## Code layout
 
 Orchestration
-- `build_sn_topt.py` — per-`n` dispatch, route selection, retry / deferred-combo handling, FPF total check against OEIS.
-- `auto_snapshot.py` — watchdog that auto-commits source edits.
+- `build_sn_topt.py` — 23-line entry point.
+- `runner/` — the orchestrator split into focused modules: `constants`,
+  `combos`, `route`, `predictors`, `cache`, `batches`, `scheduler`.
+- `auto_snapshot.py` — watchdog that auto-commits source edits to `dev`.
 
 Predictors (Python wrappers around GAP workers)
-- `predict_2factor_topt.py` — 2-factor Goursat (`distinguished` / `holt_split` / `burnside_m2`).
-- `predict_full_general_wreath.py` — wreath predictor (`m ≥ 3` single species).
+- `predict_2factor_topt.py` — two-factor Goursat
+  (`distinguished` / `holt_split` / `burnside_m2`).
+- `predict_full_general_wreath.py` — wreath predictor (`m ≥ 3`, single species).
 - `run_c2_fast_path.py`, `run_b_d8_path.py`, `run_b_elemab_path.py` — fast-path drivers.
 
 GAP engine
-- `lifting_algorithm.g` — chief-series lifting, layer-by-layer complement enumeration, FPF filtering.
-- `modules.g`, `h1_action.g` — `F_p`-module realisation and `H^1`-orbital complement enumeration.
+- `lifting_algorithm.g` — chief-series lifting, layer-by-layer complement
+  enumeration, FPF filtering.
+- `modules.g`, `h1_action.g` — `F_p`-module realisation and orbital `H^1`
+  complement enumeration.
 - `lifting_method_fast_v2.g` — legacy small-`n` driver around the same engine.
-- `b_d8.g`, `b_elemab_g.g`, `b21_*.g` — closed-form / linear-algebra fast paths.
+- `b_d8.g`, `b_elemab_g.g` — closed-form / linear-algebra fast paths.
 
 Verification
-- `verify_s20_outputs.py` — checks completeness and per-file consistency for the `n = 20` tree.
+- `verify_s20_outputs.py` — completeness and per-file consistency for the
+  `n = 20` tree.
 - `sum_fpf_s20.py` — re-tallies FPF(20) from the extracted tarball.
 
 ## References
