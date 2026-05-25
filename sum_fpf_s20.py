@@ -1,10 +1,13 @@
 """Sum '# deduped: N' headers across all S20 output files."""
+import os
 import re
 import time
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting\parallel_sn_topt_v3\20")
+# Default: the `20/` tree produced by `tar xf parallel_sn_20.tar.xz`.
+# Override with S20_DIR=<path> to point at an in-repo build tree.
+ROOT = Path(os.environ.get("S20_DIR", str(Path(__file__).resolve().parent / "20")))
 DEDUPED_RE = re.compile(rb"^# deduped:\s*(\d+)")
 
 

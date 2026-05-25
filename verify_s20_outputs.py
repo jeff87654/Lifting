@@ -11,15 +11,22 @@ Two independent checks:
 
 Prints a summary and per-error details.  Exit 0 on success, 1 on any error.
 """
-import json
+import os
 import re
 import sys
 import time
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting\parallel_sn_topt_v3\20")
-NUM_TRANS_JSON = Path(r"C:\Users\jeffr\Downloads\Lifting\parallel_sn_topt_v3\_num_transitive.json")
+# Default: the `20/` tree produced by `tar xf parallel_sn_20.tar.xz`.
+# Override with S20_DIR=<path> to point at an in-repo build tree.
+ROOT = Path(os.environ.get("S20_DIR", str(Path(__file__).resolve().parent / "20")))
 N = 20
+
+# NrTransitiveGroups(d) for d=1..21 (GAP transitive group library), embedded so
+# this script is self-contained with no external data file.
+NUM_TRANSITIVE = {1: 0, 2: 1, 3: 2, 4: 5, 5: 5, 6: 16, 7: 7, 8: 50, 9: 34,
+                  10: 45, 11: 8, 12: 301, 13: 9, 14: 63, 15: 104, 16: 1954,
+                  17: 10, 18: 983, 19: 8, 20: 1117, 21: 164}
 
 DEDUPED_RE = re.compile(rb"^# deduped:\s*(\d+)")
 
@@ -93,7 +100,7 @@ def check_file(path: Path) -> tuple[int | None, int, bool]:
 
 def main() -> int:
     t0 = time.time()
-    num_transitive = {int(k): v for k, v in json.loads(NUM_TRANS_JSON.read_text()).items()}
+    num_transitive = NUM_TRANSITIVE
     partitions = fpf_partitions(N)
     print(f"S{N} FPF partitions: {len(partitions)}")
 

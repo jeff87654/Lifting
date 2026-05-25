@@ -15,7 +15,7 @@ and `a(20)` are first independently computed here.
 | 17 | 1,466,358                        | OEIS A000638 (verified by this build) |
 | 18 | 7,274,651                        | OEIS A000638 (verified by this build) |
 | 19 | **16,745,233**                   | this build (FPF(19) = 9,470,582)      |
-| 20 | **104,918,696**                  | this build (FPF(20) = 88,173,463)     |
+| 20 | **104,994,596**                  | this build (FPF(20) = 88,249,363)     |
 
 Both new totals follow from the recurrence `a(n) = FPF(n) + a(n-1)`, where
 `FPF(n)` is the number of fixed-point-free subgroup classes of `S_n`. Every
@@ -132,10 +132,10 @@ tar xf parallel_sn_20.tar.xz   # from Releases
 python verify_s20_outputs.py
 
 # FPF total for n = 20
-python sum_fpf_s20.py          # 88,173,463
+python sum_fpf_s20.py          # 88,249,363
 ```
 
-`a(20) = FPF(20) + a(19) = 88,173,463 + 16,745,233 = 104,918,696`, and
+`a(20) = FPF(20) + a(19) = 88,249,363 + 16,745,233 = 104,994,596`, and
 `a(19) = FPF(19) + a(18) = 9,470,582 + 7,274,651 = 16,745,233`.
 
 ## Data archives
