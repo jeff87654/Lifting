@@ -2,6 +2,27 @@
 """
 predict_full_general_wreath.py — single-cluster [d,t]^m predictor.
 
+================================================================================
+THIS IS THE "wreath_ra" ENGINE / THE "RA dedup" / "canonical-form dedup" worker.
+(alias module: wreath_ra_dedup.py — searches for those names land here.)
+
+What the dedup does, in one line:
+    materialize FPF subdirect subgroups  ->  bucket by a W-invariant fingerprint
+    ->  pairwise RepresentativeAction(W, .,.) backstop under union-find.
+
+Grep map (all inside the GAP_WREATH string below):
+    fp_fingerprint / fp_fingerprint_rich  - the W-invariant bucket keys
+    PHI_* (PHI_Vec/PHI_Summary/PHI_ENABLED) - Tier-A mod-2 abelianization gluing
+                                              code (WEN_SAFE-gated weight enum)
+    canonPhi / TIERDLITE_ENABLED          - Tier-D-lite canonical-form abelian key
+                                              (always-safe; see tier_d_canonical_form.md)
+    UF_Find / UF_Union                    - union-find over the RA merges
+    RepresentativeAction(W, ...)          - the exact pairwise backstop, W = N_T wr S_m
+    WREATH_DISABLE_PHI / WREATH_DISABLE_TIERD - A/B env flags for the two keys
+Also a TESTING WORKHORSE: --candidates-from dedups candidate sets from other engines.
+Correctness oracle: predict_full_general.py (same dedup under full S_n).
+================================================================================
+
 Same approach as predict_full_general.py (materialize per Aut(Q)-orbit,
 then pairwise RA-dedup with fingerprint bucketing) but uses the smaller
 ambient group N_T wr S_m instead of full S_(m*d).  For the FPF subdirect
@@ -301,10 +322,246 @@ T_blocks_full := List([1..M_BLOCKS],
 T_m_full := Group(Concatenation(List(T_blocks_full, GeneratorsOfGroup)));
 block_pts_list := List([1..M_BLOCKS], bi -> Set([(bi-1)*DD+1..bi*DD]));
 
+# ===================== Tier A: mod-2 abelianization gluing code =====================
+# Appends to fp_fingerprint the weight enumerator of H's image in the product of the
+# per-block mod-2 abelianizations T/(T'T^2), in CONSISTENT cross-block coordinates
+# (one T_orig abelianization transported by the standard block shift, so a W block-swap
+# is a clean coordinate-block permutation).  This refinement is W-invariant ONLY when
+# N_T acts trivially on T/(T'T^2).  Because this worker is also used as a GENERAL dedup
+# check, routing is NOT relied on for safety: the worker verifies it itself and DISABLES
+# the key (falling back to the base fingerprint) unless BOTH (1) the WEN_SAFE certificate
+# and (2) an empirical conjugation self-check (under the worker's own W) pass.  An unsafe
+# key scatters W-conjugates across buckets -> they never meet in within-bucket RA ->
+# silent overcount (validation: on V4^3, 109/144 random W-conjugations changed it).
+PHI_frat2 := G -> ClosureGroup(DerivedSubgroup(G),
+                               Group(List(GeneratorsOfGroup(G), x -> x^2)));
+PHI_ab2  := NaturalHomomorphismByNormalSubgroup(T_orig, PHI_frat2(T_orig));
+PHI_Q    := Image(PHI_ab2);
+if IsTrivial(PHI_Q) then PHI_pcgs := []; PHI_dT := 0;
+else PHI_pcgs := Pcgs(PHI_Q); PHI_dT := Length(PHI_pcgs); fi;
+PHI_D       := PHI_dT * M_BLOCKS;
+PHI_shiftIn := List([1..M_BLOCKS], bi -> MappingPermListList([(bi-1)*DD+1..bi*DD], [1..DD]));
+PHI_zero    := Zero(GF(2));
+PHI_one     := One(GF(2));
+
+PHI_Vec := function(g)
+    local v, bi, telt, e, k;
+    v := ListWithIdenticalEntries(PHI_D, PHI_zero);
+    for bi in [1..M_BLOCKS] do
+        telt := RestrictedPerm(g, block_pts_list[bi]) ^ PHI_shiftIn[bi];
+        e := ExponentsOfPcElement(PHI_pcgs, Image(PHI_ab2, telt));
+        for k in [1..PHI_dT] do
+            if e[k] mod 2 = 1 then v[(bi-1)*PHI_dT+k] := PHI_one; fi;
+        od;
+    od;
+    return v;
+end;
+
+PHI_Summary := function(G)
+    local vecs, B, dim, bi, proj, wen;
+    vecs := List(GeneratorsOfGroup(G), PHI_Vec);
+    if vecs = [] then B := []; else B := BaseMat(vecs); fi;
+    dim := Length(B);
+    proj := SortedList(List([1..M_BLOCKS],
+        bi -> RankMat(List(B, v -> v{[(bi-1)*PHI_dT+1..bi*PHI_dT]}))));
+    if dim = 0 then wen := [[0, 1]];
+    else wen := Collected(List(AsList(VectorSpace(GF(2), B)),
+                               v -> Number(v, x -> not IsZero(x)))); fi;
+    return [dim, proj, wen];
+end;
+
+# Gate 1: WEN_SAFE certificate -- N_T_canonical acts trivially on T/(T'T^2).
+PHI_WEN_SAFE := true;
+if PHI_dT >= 2 then
+    if ForAny(GeneratorsOfGroup(N_T_canonical),
+              gg -> ForAny(GeneratorsOfGroup(T_orig),
+                           xx -> Image(PHI_ab2, xx^gg) <> Image(PHI_ab2, xx))) then
+        PHI_WEN_SAFE := false;
+    fi;
+fi;
+
+# Gate 2: empirical self-check -- key computes on every materialized input AND is
+# invariant under random W-conjugation on a sample.  Wrapped so ANY error disables it.
+PHI_validate := function()
+    local i, nsamp, H, kk, t, w;
+    for i in [1..n_materialized] do PHI_Summary(ALL_FP[i]); od;
+    nsamp := Minimum(25, n_materialized);
+    for i in [1..nsamp] do
+        H := ALL_FP[i]; kk := PHI_Summary(H);
+        for t in [1..8] do
+            w := PseudoRandom(W);
+            if PHI_Summary(H^w) <> kk then return false; fi;
+        od;
+    od;
+    return true;
+end;
+PHI_ENABLED := false;
+if PHI_dT > 0 and PHI_WEN_SAFE and n_materialized > 0 then
+    PHI_trial := CALL_WITH_CATCH(PHI_validate, []);
+    if PHI_trial[1] = true and PHI_trial[2] = true then PHI_ENABLED := true; fi;
+fi;
+if __PHI_DISABLE__ = 1 then PHI_ENABLED := false; fi;   # env WREATH_DISABLE_PHI=1 (A/B)
+Print("Tier-A Phi gluing code: dT=", PHI_dT, " WEN_SAFE=", PHI_WEN_SAFE,
+      " ENABLED=", PHI_ENABLED, "\n");
+
+# ===================== Tier D-lite: canonical form of the abelian gluing code =====
+# canonPhi(H) = lex-min over g in W|_{F2^D} of RREF(Basis(Phi(H))*g), where
+# W|_{F2^D} = (GL-image of N_T on T/(T'T^2)) wr S_m is the action W induces on the
+# PHI coordinates.  W-invariant BY CONSTRUCTION (the lex-min quotients out the GL
+# image), so -- unlike the Tier-A weight enumerator -- it needs NO WEN_SAFE gate and
+# is safe for V4 / elementary-abelian species (where Tier A self-disables).  It is a
+# COMPLETE invariant of the abelian code (strictly finer than the weight enumerator),
+# so it collapses each abelian-equivalence bucket to its true W-classes-of-Phi before
+# the pairwise RA backstop.  RA stays exact, so a bug here can only OVER-split
+# (overcount) -- caught by the same conjugation self-check pattern as Tier A.
+# Design note: tier_d_canonical_form.md section 6.
+TIERDLITE_ENABLED := false;
+TD_GLsize   := 0;
+TD_grpOrder := 0;
+TD_CAP      := 200000;     # enable only if |GL-image|^m * m! <= TD_CAP (else WEN+RA)
+canonPhi    := fail;
+if PHI_dT > 0 then
+    # GL-image: for each N_T generator, its PHI_dT x PHI_dT GF(2) matrix on the
+    # PHI_pcgs basis (row k = exponents of e_k^gg).  Code vectors are ROWS, GL acts
+    # on the right (v -> v*M), matching PHI_Vec's exponent storage.
+    TD_pcrep := List(PHI_pcgs, p -> PreImagesRepresentative(PHI_ab2, p));
+    TD_glMat := function(gg)
+        local rows, k;
+        rows := [];
+        for k in [1..PHI_dT] do
+            Add(rows, List(ExponentsOfPcElement(PHI_pcgs,
+                              Image(PHI_ab2, TD_pcrep[k]^gg)),
+                           e -> (e mod 2) * PHI_one));
+        od;
+        return rows;
+    end;
+    TD_glGens := Filtered(List(GeneratorsOfGroup(N_T_canonical), TD_glMat),
+                          M -> M <> IdentityMat(PHI_dT, GF(2)));
+    if TD_glGens = [] then
+        TD_GLelems := [ IdentityMat(PHI_dT, GF(2)) ];   # trivial GL (e.g. D8)
+        TD_GLsize  := 1;
+    else
+        TD_GL      := Group(TD_glGens);
+        TD_GLelems := AsList(TD_GL);                    # nontrivial GL (e.g. V4 -> S3)
+        TD_GLsize  := Size(TD_GL);
+    fi;
+    TD_grpOrder := TD_GLsize ^ M_BLOCKS * Factorial(M_BLOCKS);
+    TD_glTuples := Cartesian(List([1..M_BLOCKS], i -> TD_GLelems));   # GL-image^m tuples
+
+    TD_rref := function(rows)
+        if Length(rows) = 0 then return []; fi;
+        return Filtered(TriangulizedMat(rows), r -> not IsZero(r));  # unique RREF
+    end;
+    # Apply a wreath element (per-block GL tuple glt, block permutation pi) to a basis.
+    TD_apply := function(basis, glt, pi)
+        local out, v, w, bi, src;
+        out := [];
+        for v in basis do
+            w := ShallowCopy(v);
+            for bi in [1..M_BLOCKS] do
+                src := bi ^ (pi^-1);
+                w{[(bi-1)*PHI_dT+1 .. bi*PHI_dT]} :=
+                    v{[(src-1)*PHI_dT+1 .. src*PHI_dT]} * glt[src];
+            od;
+            Add(out, w);
+        od;
+        return out;
+    end;
+    canonPhi := function(G)
+        local Bv, B, best, pi, glt, rr, cur;
+        Bv := List(GeneratorsOfGroup(G), PHI_Vec);
+        if Bv = [] then return [0, []]; fi;
+        B := BaseMat(Bv);
+        if Length(B) = 0 then return [0, []]; fi;
+        best := fail;
+        for pi in SymmetricGroup(M_BLOCKS) do
+            for glt in TD_glTuples do
+                rr := TD_rref(TD_apply(B, glt, pi));
+                cur := [Length(rr), List(rr, r -> List(r, IntFFE))];  # hashable key
+                if best = fail or cur < best then best := cur; fi;
+            od;
+        od;
+        return best;
+    end;
+
+    # Self-check: canonPhi must be stable under random W-conjugation (clone of
+    # PHI_validate).  Any error / instability disables the key -> fall back to WEN+RA.
+    TD_validate := function()
+        local i, nsamp, H, kk, t, w;
+        for i in [1..n_materialized] do canonPhi(ALL_FP[i]); od;
+        nsamp := Minimum(25, n_materialized);
+        for i in [1..nsamp] do
+            H := ALL_FP[i]; kk := canonPhi(H);
+            for t in [1..8] do
+                w := PseudoRandom(W);
+                if canonPhi(H^w) <> kk then return false; fi;
+            od;
+        od;
+        return true;
+    end;
+    if n_materialized > 0 and TD_grpOrder <= TD_CAP then
+        TD_trial := CALL_WITH_CATCH(TD_validate, []);
+        if TD_trial[1] = true and TD_trial[2] = true then TIERDLITE_ENABLED := true; fi;
+    fi;
+fi;
+if __TIERD_DISABLE__ = 1 then TIERDLITE_ENABLED := false; fi;  # env WREATH_DISABLE_TIERD=1
+Print("Tier-D-lite canonPhi: dT=", PHI_dT, " GLsize=", TD_GLsize,
+      " grpOrder=", TD_grpOrder, " cap=", TD_CAP,
+      " ENABLED=", TIERDLITE_ENABLED, "\n");
+
+# ===================== Tier D (full): complete canonical form under W =============
+# PROTOTYPE, gated OFF by default (env WREATH_ENABLE_TIERD_FULL=1).  canonFull(H) is a
+# COMPLETE canonical form of H under W: encode H by the index-set of its elements in the
+# wreath base B = T^m (|B| = |T|^m), on which W acts by conjugation as a permutation
+# group W_perm; canonFull(H) := CanonicalImage(W_perm, idx(H), OnSets) (images package).
+# Then H_i ~_W H_j  <=>  canonFull(H_i) = canonFull(H_j), EXACTLY -- so a residual bucket
+# resolves in O(b) canon calls + grouping instead of O(b^2) pairwise RA.  Cost scales
+# with |T|^m (the doc's old "MinimalImage too slow" result), so it is gated to small
+# |B| and applied ONLY to residual buckets >= a threshold; pairwise RA handles the rest.
+# Design note: tier_d_canonical_form.md section 3.  Bench-only this round (don't promote).
+TIERDFULL_ENABLED   := false;
+TIERDFULL_CAP       := 4096;   # |T|^m cap on the conjugation domain
+TIERDFULL_THRESHOLD := 8;      # only replace RA on buckets at least this big
+canonFull           := fail;
+if __TIERDFULL_ENABLE__ = 1 then
+    if LoadPackage("images") <> fail and Size(T_m_full) <= TIERDFULL_CAP then
+        TDF_Belems := Elements(T_m_full);
+        TDF_Bidx   := NewDictionary(TDF_Belems[1], true);
+        for tdf_ii in [1..Length(TDF_Belems)] do
+            AddDictionary(TDF_Bidx, TDF_Belems[tdf_ii], tdf_ii);
+        od;
+        TDF_Wperm := Image(ActionHomomorphism(W, TDF_Belems, OnPoints));  # conj action
+        canonFull := function(H)
+            local idx;
+            idx := Set(Elements(H), e -> LookupDictionary(TDF_Bidx, e));
+            return CanonicalImage(TDF_Wperm, idx, OnSets);
+        end;
+        TDF_validate := function()
+            local i, nsamp, H, kk, t, w;
+            nsamp := Minimum(15, n_materialized);
+            for i in [1..nsamp] do
+                H := ALL_FP[i]; kk := canonFull(H);
+                for t in [1..5] do
+                    w := PseudoRandom(W);
+                    if canonFull(H^w) <> kk then return false; fi;
+                od;
+            od;
+            return true;
+        end;
+        if n_materialized > 0 then
+            TDF_trial := CALL_WITH_CATCH(TDF_validate, []);
+            if TDF_trial[1] = true and TDF_trial[2] = true then TIERDFULL_ENABLED := true; fi;
+        fi;
+    fi;
+fi;
+Print("Tier-D-full canonFull: enable_req=", __TIERDFULL_ENABLE__,
+      " |B|=", Size(T_m_full), " cap=", TIERDFULL_CAP,
+      " thresh=", TIERDFULL_THRESHOLD, " ENABLED=", TIERDFULL_ENABLED, "\n");
+
 fp_fingerprint := function(G)
     local sz, abi, ds, idg, block_perm, pure_F, pure_size, pure_abi,
           per_block_kernel_sizes, subset_dim_signature, k, S, subset_pts,
-          gens_S, projG_S;
+          gens_S, projG_S, phi_extra;
     sz := Size(G);
     abi := AbelianInvariants(G);
     ds := List(DerivedSeries(G), Size);
@@ -335,11 +592,16 @@ fp_fingerprint := function(G)
             end)));
     od;
 
+    if   TIERDLITE_ENABLED then phi_extra := canonPhi(G);     # Tier D-lite (complete, always-safe)
+    elif PHI_ENABLED       then phi_extra := PHI_Summary(G);  # Tier A (WEN, WEN_SAFE-gated)
+    else                        phi_extra := 0;
+    fi;
     return [sz, idg, abi, ds,
             Size(block_perm), IdGroup(block_perm),
             pure_size, pure_abi,
             per_block_kernel_sizes,
-            subset_dim_signature];
+            subset_dim_signature,
+            phi_extra];
 end;
 
 # Rich invariants borrowed from lifting_method_fast_v2.g:CheapSubgroupInvariantFull
@@ -494,10 +756,33 @@ n_conj_pairs := 0;
 n_ra_calls := 0;
 ra_total_ms := 0;
 ra_max_ms := 0;
+n_tierdfull_buckets := 0;       # buckets resolved by full Tier D instead of pairwise RA
 for b_idx in [1..Length(bucket_lists)] do
     bk := bucket_lists[b_idx];
     bucket_t0 := Runtime();
     bucket_calls := 0;
+    if TIERDFULL_ENABLED and Length(bk) >= TIERDFULL_THRESHOLD then
+        # Complete canonical form: group bucket members by canonFull, union each group.
+        # O(b) canon calls + grouping, no pairwise RA.
+        canon_keys := [];
+        canon_groups := [];
+        for i in bk do
+            ck := canonFull(ALL_FP[i]);
+            pos := Position(canon_keys, ck);
+            if pos = fail then
+                Add(canon_keys, ck); Add(canon_groups, [i]);
+            else
+                Add(canon_groups[pos], i);
+            fi;
+        od;
+        for grp in canon_groups do
+            for jj in [2..Length(grp)] do UF_Union(grp[1], grp[jj]); od;
+        od;
+        n_tierdfull_buckets := n_tierdfull_buckets + 1;
+        Print("  bucket ", b_idx, " size=", Length(bk),
+              " TIER-D-FULL canon-groups=", Length(canon_groups),
+              " elapsed=", Runtime() - bucket_t0, "ms\n");
+    else
     for i in [1..Length(bk)-1] do
         for j in [i+1..Length(bk)] do
             if UF_Find(bk[i]) = UF_Find(bk[j]) then continue; fi;
@@ -517,11 +802,13 @@ for b_idx in [1..Length(bucket_lists)] do
     Print("  bucket ", b_idx, " size=", Length(bk),
           " calls=", bucket_calls,
           " elapsed=", Runtime() - bucket_t0, "ms\n");
+    fi;
 od;
 Print("RA TIMING: total_calls=", n_ra_calls,
       "  total_time=", ra_total_ms, "ms",
       "  avg=", Int(ra_total_ms / Maximum(n_ra_calls, 1)), "ms",
-      "  max=", ra_max_ms, "ms\n");
+      "  max=", ra_max_ms, "ms",
+      "  tierdfull_buckets=", n_tierdfull_buckets, "\n");
 classes := Set([1..n_materialized], i -> UF_Find(i));
 n_distinct := Length(classes);
 ra_elapsed := Runtime() - t1;
@@ -529,31 +816,45 @@ Print("RA-in-W dedup: ", n_distinct, " distinct from ", n_materialized,
       " (", n_ra_calls, " RA calls, ", n_conj_pairs, " conj pairs, ",
       ra_elapsed, "ms)\n");
 
+# HARVEST: class_sum per distinct class via labelled_oracle.g
+# LocalizedFastClassSize.  Bounded: n_distinct is typically small for wreath
+# combos, and the per-rep Normalizer(W, H) runs in a tiny block-wreath W.
+Read("C:/Users/jeffr/Downloads/Lifting/labelled_oracle.g");
+wreath_cs_sum := 0;
+seen_class := rec();
+wreath_rep_idxs := [];
+for i in [1..n_materialized] do
+    cls := UF_Find(i);
+    cls_key := String(cls);
+    if not IsBound(seen_class.(cls_key)) then
+        seen_class.(cls_key) := true;
+        Add(wreath_rep_idxs, i);
+        wreath_cs_sum := wreath_cs_sum +
+            LocalizedFastClassSize(ALL_FP[i], TARGET_N);
+    fi;
+od;
+
 # Emit one fp generator-list per distinct class (one rep per UF class).
 # Output written as raw bracketed lines; Python wrapper composes legacy header.
+# First line is the harvest header: `# class_sum: N`.
 EMIT_GENS_PATH := "__GEN_PATH__";
 if EMIT_GENS_PATH <> "" then
-    PrintTo(EMIT_GENS_PATH, "");
-    seen_class := rec();
-    for i in [1..n_materialized] do
-        cls := UF_Find(i);
-        cls_key := String(cls);
-        if not IsBound(seen_class.(cls_key)) then
-            seen_class.(cls_key) := true;
-            gens := GeneratorsOfGroup(ALL_FP[i]);
-            if Length(gens) > 0 then
-                gens_s := JoinStringsWithSeparator(List(gens, String), ",");
-            else
-                gens_s := "";
-            fi;
-            AppendTo(EMIT_GENS_PATH, "[", gens_s, "]\n");
+    PrintTo(EMIT_GENS_PATH, "# class_sum: ", wreath_cs_sum, "\n");
+    for i in wreath_rep_idxs do
+        gens := GeneratorsOfGroup(ALL_FP[i]);
+        if Length(gens) > 0 then
+            gens_s := JoinStringsWithSeparator(List(gens, String), ",");
+        else
+            gens_s := "";
         fi;
+        AppendTo(EMIT_GENS_PATH, "[", gens_s, "]\n");
     od;
 fi;
 
 Print("RESULT n_materialized=", n_materialized,
       " n_distinct=", n_distinct,
-      " predicted=", n_distinct, "\n");
+      " predicted=", n_distinct,
+      " class_sum=", wreath_cs_sum, "\n");
 LogTo();
 QUIT;
 """
@@ -675,6 +976,9 @@ def predict_wreath(combo_str: str, target_n=18, timeout=3600,
         .replace("__T_ID__", str(t))
         .replace("__M_BLOCKS__", str(m_blocks))
         .replace("__SUBS_CYG__", to_cyg(subs_g))
+        .replace("__PHI_DISABLE__", os.environ.get("WREATH_DISABLE_PHI", "0"))
+        .replace("__TIERD_DISABLE__", os.environ.get("WREATH_DISABLE_TIERD", "0"))
+        .replace("__TIERDFULL_ENABLE__", os.environ.get("WREATH_ENABLE_TIERD_FULL", "0"))
         .replace("__MATERIALIZE__", str(materialize))
         .replace("__CANDIDATES_PATH__",
                  to_cyg(Path(candidates_from)) if candidates_from else "")

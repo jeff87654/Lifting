@@ -139,8 +139,12 @@ _validate/
 # --- Ad-hoc Python runners (keep only the canonical fast-path drivers) ---
 run_*.py
 !run_c2_fast_path.py
+!run_c2_factor_path.py
+!run_c2_glue_path.py
 !run_b_d8_path.py
 !run_b_elemab_path.py
+!run_b_power_path.py
+!run_wreath_via_2factor.py
 !run_test.py
 !run_s7_test.py
 !run_ab_test.py
@@ -229,3 +233,10 @@ b_elemab.g
 b21_*.g
 holt_engine_monolith.g
 holt_engine/
+
+# --- Additional result/scratch dirs found during cleanup 2026-05-24 ---
+parallel_sn_b_power/
+emit_4444/
+bucket_run_*/
+debug_*/
+profile_wreath_work/

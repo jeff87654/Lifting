@@ -39,10 +39,12 @@ TASK_KIND_BATCH = "batch"
 TASK_KIND_SUPER_BATCH = "super_batch"
 TASK_KIND_C2 = "c2"
 TASK_KIND_C2_FACTOR_BATCH = "c2_factor_batch"
+TASK_KIND_C2_GLUE_BATCH = "c2_glue_batch"
 TASK_KIND_WREATH = "wreath"
 TASK_KIND_WREATH_VIA_2F = "wreath_via_2f"
 TASK_KIND_BD8 = "bd8"
 TASK_KIND_ELEMAB = "elemab"
+TASK_KIND_B_POWER = "b_power"
 
 # Kinds whose subprocess returns a results[] array of per-job result objects
 # (vs single-shaped kinds that return one result object).
@@ -50,6 +52,7 @@ BATCH_KINDS = frozenset({
     TASK_KIND_BATCH,
     TASK_KIND_SUPER_BATCH,
     TASK_KIND_C2_FACTOR_BATCH,
+    TASK_KIND_C2_GLUE_BATCH,
 })
 
 
@@ -64,8 +67,11 @@ for entry in batch do
     output := entry[3];
     T := TransitiveGroup(d, t);
     gens := GeneratorsOfGroup(T);
+    # HARVEST: class_sum for the single emitted rep = d! / |N_{S_d}(T)|.
+    cs := Factorial(d) / Size(Normalizer(SymmetricGroup(d), T));
     PrintTo(output, "# combo: [ [ ", d, ", ", t, " ] ]\n");
     AppendTo(output, "# candidates: 1\n# deduped: 1\n# elapsed_ms: 0\n");
+    AppendTo(output, "# class_sum: ", cs, "\n");
     if Length(gens) > 0 then
         s := JoinStringsWithSeparator(List(gens, String), ",");
     else
@@ -79,29 +85,64 @@ QUIT;
 """
 
 
-def run_bootstrap_batch(entries, tmp_dir):
-    """Bootstrap multiple single-block combos in one GAP session.
-    `entries` = list of (d, t, output_path)."""
+def run_bootstrap_batch(entries, tmp_dir, chunk_size=250):
+    """Bootstrap multiple single-block combos, chunked into GAP sessions of
+    `chunk_size` entries.  `entries` = list of (d, t, output_path).  Returns
+    the worst GAP exit code across chunks (0 also when nothing to do).
+
+    Chunking + a per-chunk timeout scaled to the chunk size replace the old
+    single-session hardcoded 600 s, which the n=16 bootstrap (1954 degree-16
+    combos, each computing Normalizer(S_16, T) for the labelled harvest)
+    exceeded on 2026-06-10 — and the uncaught TimeoutExpired killed the whole
+    build.  Outputs written before a timeout persist (the GAP loop PrintTo's
+    each combo as it goes), so the scheduler's per-entry verify-and-retry
+    only recomputes the genuinely missing tail."""
     if not entries:
-        return
+        return 0
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    log = tmp_dir / "bootstrap.log"
-    if log.exists(): log.unlink()
-    batch_str = "[" + ",".join(
-        f'[{d},{t},"{to_cyg(p)}"]' for d, t, p in entries) + "]"
-    run_g = tmp_dir / "bootstrap_run.g"
-    run_g.write_text(
-        BOOTSTRAP_TEMPLATE
-        .replace("__LOG__", to_cyg(log))
-        .replace("__BATCH__", batch_str),
-        encoding="utf-8"
-    )
-    cmd = [GAP_BASH, "--login", "-c",
-           f'cd "{GAP_HOME}" && ./gap.exe -q -o 0 "{to_cyg(run_g)}"']
     env = os.environ.copy()
     env["PATH"] = r"C:\Program Files\GAP-4.15.1\runtime\bin;" + env.get("PATH", "")
     env["CYGWIN"] = "nodosfilewarning"
-    subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
+    rc_worst = 0
+    for ci, start in enumerate(range(0, len(entries), chunk_size)):
+        chunk = entries[start:start + chunk_size]
+        log = tmp_dir / f"bootstrap_{ci}.log"
+        if log.exists(): log.unlink()
+        batch_str = "[" + ",".join(
+            f'[{d},{t},"{to_cyg(p)}"]' for d, t, p in chunk) + "]"
+        run_g = tmp_dir / f"bootstrap_run_{ci}.g"
+        run_g.write_text(
+            BOOTSTRAP_TEMPLATE
+            .replace("__LOG__", to_cyg(log))
+            .replace("__BATCH__", batch_str),
+            encoding="utf-8"
+        )
+        cmd = [GAP_BASH, "--login", "-c",
+               f'cd "{GAP_HOME}" && ./gap.exe -q -o 0 "{to_cyg(run_g)}"']
+        # 10 s/entry headroom: degree-16/18/20 normalizers in S_d are the
+        # slow tail; a 250-entry chunk gets ~42 min before being declared dead.
+        chunk_timeout = max(600, 10 * len(chunk))
+        try:
+            proc = subprocess.run(cmd, env=env, capture_output=True,
+                                  text=True, timeout=chunk_timeout)
+            rc = proc.returncode
+            stderr_tail = (proc.stderr or "")[-500:]
+        except subprocess.TimeoutExpired:
+            rc = -1
+            stderr_tail = f"(timed out after {chunk_timeout}s)"
+        # 2026-06-09 review item: rc/outputs used to be ignored entirely, so
+        # a dead GAP left silently-missing bootstrap combos (invisible to the
+        # retry loop, which skips route=="bootstrap").  Surface the evidence;
+        # the scheduler verifies per-entry outputs and decides retry/abort.
+        if rc != 0:
+            tail = ""
+            if log.exists():
+                tail = log.read_text(encoding="utf-8", errors="replace")[-2000:]
+            print(f"  WARNING: bootstrap chunk {ci} "
+                  f"({len(chunk)} combos) rc={rc}; log tail:\n{tail}\n"
+                  f"stderr tail: {stderr_tail}")
+            rc_worst = rc
+    return rc_worst
 
 
 # --- Run a non-bootstrap combo --------------------------------------------

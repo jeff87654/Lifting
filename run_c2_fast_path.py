@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -75,6 +76,64 @@ def _mask_to_perm(mask: int, m: int) -> str:
     return "".join(cycles) if cycles else "()"
 
 
+def _c2_labelled_class_sum(k: int) -> int:
+    """Labelled `# class_sum` (A005432 / A116693 contribution) for pure
+    [2,1]^k — the orbit type [2^k] in S_{2k}.
+
+    Lets this fast path emit the labelled count inline like the harvest-
+    instrumented engine, so labelled_postpass.py takes its inline fast path
+    and skips the per-rep Normalizer-in-W harvest (which was the slow step
+    for k=10).
+
+    Closed form: each rep is a full-support binary code V <= F_2^k, and
+    (b_elemab_harvest.g) cs = (2k)! / (2^k * |Stab_{S_k}(V)|).  Summing over
+    S_k-orbit reps collapses (orbit-stabilizer) to
+
+        class_sum(k) = (2k-1)!! * A(k)
+
+    with A(k) = number of full-support (no zero coordinate) subspaces of
+    F_2^k = sum_{j=0}^{k} (-1)^(k-j) C(k,j) G(j), where G = Galois numbers
+    (G(n) = number of subspaces of F_2^n, OEIS A006116).
+
+    Verified == BElemab_ClassSumWithSizes(2,1,k).class_sum for k=1..9
+    (1, 6, 90, 2730, 149310, 13825350, 2082970890, 497792745450,
+     185490329374350); k=10 = 106525008449209350.
+    """
+    # Galois numbers G(0..k):  G(n+1) = 2 G(n) + (2^n - 1) G(n-1).
+    G = [1, 2]
+    while len(G) <= k:
+        n = len(G) - 1
+        G.append(2 * G[n] + (2 ** n - 1) * G[n - 1])
+    A = sum((-1) ** (k - j) * math.comb(k, j) * G[j] for j in range(k + 1))
+    dfact = 1                       # (2k-1)!!
+    for i in range(1, 2 * k, 2):
+        dfact *= i
+    return dfact * A
+
+
+def _insert_class_sum_header(output_path, class_sum: int) -> None:
+    """Splice a `# class_sum: N` line into an already-written combo file
+    (after the `# deduped:` header) if not already present.  Used for the
+    b21 path, where GAP writes the file."""
+    out = Path(output_path)
+    try:
+        text = out.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if re.search(r"^# class_sum:", text, re.MULTILINE):
+        return
+    lines, new_lines, inserted = text.split("\n"), [], False
+    for ln in lines:
+        new_lines.append(ln)
+        if not inserted and ln.startswith("# deduped:"):
+            new_lines.append(f"# class_sum: {class_sum}")
+            inserted = True
+    if not inserted:
+        new_lines.insert(0, f"# class_sum: {class_sum}")
+    with out.open("w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(new_lines))
+
+
 def _write_all_c2_binary_code_reps(combo, output_path, elapsed_ms=0):
     m = len(combo)
     reps = ALL_C2_CODE_REPS[m]
@@ -83,9 +142,11 @@ def _write_all_c2_binary_code_reps(combo, output_path, elapsed_ms=0):
     combo_header = "[ " + ", ".join("[ 2, 1 ]" for _ in range(m)) + " ]"
     tmp = out.with_suffix(out.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as f:
+        class_sum = _c2_labelled_class_sum(m)
         f.write(f"# combo: {combo_header}\n")
         f.write(f"# candidates: {len(reps)}\n")
         f.write(f"# deduped: {len(reps)}\n")
+        f.write(f"# class_sum: {class_sum}\n")
         f.write(f"# elapsed_ms: {elapsed_ms}\n")
         for basis in reps:
             gens = ",".join(_mask_to_perm(mask, m) for mask in basis)
@@ -96,6 +157,7 @@ def _write_all_c2_binary_code_reps(combo, output_path, elapsed_ms=0):
         "mode": "c2_binary_code_reps",
         "predicted": len(reps),
         "candidates": len(reps),
+        "class_sum": class_sum,
         "elapsed_s": round(elapsed_ms / 1000.0, 3),
         "output_path": str(output_path),
     }
@@ -160,11 +222,17 @@ def _run_b21(combo, output_path, timeout=3600):
                 "log_tail": log_text[-2000:],
                 "elapsed_s": elapsed}
     total = int(m.group(1))
+    # Emit the labelled # class_sum inline (closed form; GAP wrote the file,
+    # so splice the header in) -> labelled_postpass takes its inline fast path
+    # and skips the slow per-rep Normalizer-in-W harvest for this combo.
+    class_sum = _c2_labelled_class_sum(k)
+    _insert_class_sum_header(output_path, class_sum)
     return {
         "combo": "_".join("[2,1]" for _ in range(k)),
         "mode": "b21_linear_algebra",
         "predicted": total,
         "candidates": total,
+        "class_sum": class_sum,
         "elapsed_s": elapsed,
         "output_path": str(output_path),
     }

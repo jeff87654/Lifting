@@ -39,8 +39,10 @@ from runner.combos import (
 from runner.predictors import (
     TASK_KIND_BATCH,
     TASK_KIND_BD8,
+    TASK_KIND_B_POWER,
     TASK_KIND_C2,
     TASK_KIND_C2_FACTOR_BATCH,
+    TASK_KIND_C2_GLUE_BATCH,
     TASK_KIND_ELEMAB,
     TASK_KIND_SUPER_BATCH,
     TASK_KIND_WREATH,
@@ -65,7 +67,17 @@ def _routes_to_v2(left_combo, j):
     All-small-partition multi-cluster combos go to v3 even when these would
     otherwise match — v3's narrow Q-set + abelianization-based GQuotients
     handles them in minutes per H rather than v2legacy's hours.
+
+    LEGACY RETIRED 2026-06-04: v3 is the production engine for ALL 2-factor jobs.
+    The v3-only S2..S21 validation campaign confirmed v3 matches/supersedes legacy
+    (the TG(8,9)/(8,11) crash + qfree3 rationale above is stale -- swap-iso rework
+    fixed it).  predict_2factor_topt_v2legacy.py is KEPT (not on the production
+    path) as an independent cross-check engine for completeness verification.
+    Escape hatch: BUILD_SN_USE_V2LEGACY=1 restores the old heuristic routing (for
+    A-B / cross-validation).  BUILD_SN_V3_ONLY=1 is now a no-op but still honoured.
     """
+    if os.environ.get("BUILD_SN_USE_V2LEGACY") != "1":
+        return False
     partition = j[3]
     if all(d <= 4 for d in partition) and len(left_combo) > 1:
         return False
@@ -103,6 +115,8 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
     c2_factor_combos = []
     bd8_combos = []        # pure (4,3)^k — run_b_d8_path.py
     elemab_combos = []     # pure (d,t)^k with (d,t) elementary abelian — run_b_elemab_path.py
+    b_power_combos = []    # pure (d,t)^k with (d,t) in B_POWER_TG — run_b_power_path.py
+    c2_glue_combos = []    # exactly one (2,1) block — run_c2_glue_path.py (no LEFT H-cache)
     wreath_combos = []
     wreath_via_2f_combos = []
 
@@ -127,11 +141,17 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
             if rt == "c2_factor":
                 c2_factor_combos.append((combo, output_path, partition))
                 continue
+            if rt == "b_power":
+                b_power_combos.append((combo, output_path, partition))
+                continue
             if rt == "bd8_fast":
                 bd8_combos.append((combo, output_path, partition))
                 continue
             if rt == "elemab_fast":
                 elemab_combos.append((combo, output_path, partition))
+                continue
+            if rt == "c2_glue":
+                c2_glue_combos.append((combo, output_path, partition))
                 continue
             if rt == "wreath_ra":
                 wreath_combos.append((combo, output_path, partition))
@@ -312,8 +332,12 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
                       f"c2_factor_{batch_idx}({len(chunk)}j)",
                       cmd, outer_timeout))
 
-    # Burnside m=2 routes to v2legacy for the swap-iso reasons documented in
-    # _routes_to_v2.
+    # Burnside m=2: v3 is the production engine (legacy retired 2026-06-04; v3
+    # supports burnside_m2, verified on [8,9]_[8,9], [8,11]_[8,11]).  Escape hatch
+    # BUILD_SN_USE_V2LEGACY=1 restores legacy routing.
+    _burnside_script = ("predict_2factor_topt_v2legacy.py"
+                        if os.environ.get("BUILD_SN_USE_V2LEGACY") == "1"
+                        else "predict_2factor_topt.py")
     for combo, output_path, partition in burnside_combos:
         burn_dir = pred_tmp / f"burnside_n{n}_{combo_filename(combo)}"
         burn_dir.mkdir(parents=True, exist_ok=True)
@@ -322,7 +346,7 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
             "combo": list(combo), "mode": "burnside_m2",
             "output_path": str(output_path)
         }]), encoding="utf-8")
-        cmd = [sys.executable, "predict_2factor_topt_v2legacy.py",
+        cmd = [sys.executable, _burnside_script,
                "--batch", str(jobs_json), "--force",
                "--timeout", str(single_inner_timeout)]
         tasks.append((TASK_KIND_BATCH, combo_filename(combo), cmd, single_outer_timeout))
@@ -345,6 +369,72 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
                "--timeout", str(single_inner_timeout)]
         tasks.append((TASK_KIND_ELEMAB, combo_filename(combo), cmd, single_outer_timeout))
 
+    # b_power pure-power engine: one task per pure (d,t)^k combo with (d,t)
+    # in B_POWER_TG.  Handles C3/S3/C4/V4/D8 powers via b_power/power_dispatch.g
+    # without going through the tower/fold pipeline.
+    for combo, output_path, partition in b_power_combos:
+        cmd = [sys.executable, "run_b_power_path.py",
+               "--combo", combo_filename(combo),
+               "--output-path", str(output_path),
+               "--timeout", str(single_inner_timeout)]
+        tasks.append((TASK_KIND_B_POWER, combo_filename(combo), cmd, single_outer_timeout))
+
+    # C2-glue streaming path: combos with exactly one (2,1) block, batched
+    # into shared GAP sessions (run_c2_glue_path.py --batch-json).  Per-job
+    # cost scales with the n-2 source's class count (= lines streamed), so
+    # jobs are weighed by it: sources above BUILD_SN_C2GLUE_HEAVY_SRC lines
+    # get a standalone session (a monster like [2,1]_[4,3]^k must neither
+    # wait behind nor stall small jobs) and are emitted first; the rest are
+    # chunked to amortize GAP startup.
+    try:
+        c2_glue_batch_jobs = int(os.environ.get(
+            "BUILD_SN_C2GLUE_BATCH_JOBS",
+            str(max(16, args.super_batch_jobs * 4))))
+    except ValueError:
+        c2_glue_batch_jobs = max(16, args.super_batch_jobs * 4)
+    c2_glue_batch_jobs = max(1, c2_glue_batch_jobs)
+    try:
+        c2_glue_heavy_src = int(os.environ.get(
+            "BUILD_SN_C2GLUE_HEAVY_SRC", "2000"))
+    except ValueError:
+        c2_glue_heavy_src = 2000
+
+    def _c2_glue_weight(combo):
+        x = list(combo)
+        x.remove((2, 1))
+        return left_class_count(tuple(x), sum(d for d, _ in x), sn_out)
+
+    c2_glue_chunks = []
+    c2_glue_light = []
+    for combo, output_path, partition in sorted(
+            c2_glue_combos, key=lambda t: -_c2_glue_weight(t[0])):
+        if _c2_glue_weight(combo) > c2_glue_heavy_src:
+            c2_glue_chunks.append([(combo, output_path, partition)])
+        else:
+            c2_glue_light.append((combo, output_path, partition))
+    for start in range(0, len(c2_glue_light), c2_glue_batch_jobs):
+        c2_glue_chunks.append(c2_glue_light[start:start + c2_glue_batch_jobs])
+    for batch_idx, chunk in enumerate(c2_glue_chunks):
+        cg_dir = pred_tmp / f"c2_glue_n{n}_{batch_idx}"
+        cg_dir.mkdir(parents=True, exist_ok=True)
+        jobs_json = cg_dir / "jobs.json"
+        jobs_json.write_text(json.dumps([
+            {"combo": combo_filename(combo), "output_path": str(output_path)}
+            for combo, output_path, _ in chunk
+        ]), encoding="utf-8")
+        if args.combo_timeout == 0:
+            inner_timeout = 0
+            outer_timeout = None
+        else:
+            inner_timeout = args.combo_timeout * len(chunk) + 120
+            outer_timeout = inner_timeout + 120
+        cmd = [sys.executable, "run_c2_glue_path.py",
+               "--batch-json", str(jobs_json),
+               "--timeout", str(inner_timeout)]
+        tasks.append((TASK_KIND_C2_GLUE_BATCH,
+                      f"c2_glue_{batch_idx}({len(chunk)}j)",
+                      cmd, outer_timeout))
+
     for combo, output_path, partition in wreath_combos:
         cmd = [sys.executable, "predict_full_general_wreath.py",
                "--combo", combo_filename(combo),
@@ -366,7 +456,8 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
     # Stable sort preserves intra-kind order so deterministic.
     _priority = {
         TASK_KIND_WREATH: 0, TASK_KIND_WREATH_VIA_2F: 0,
-        TASK_KIND_BD8: 0, TASK_KIND_ELEMAB: 0,
+        TASK_KIND_BD8: 0, TASK_KIND_ELEMAB: 0, TASK_KIND_B_POWER: 0,
+        TASK_KIND_C2_GLUE_BATCH: 0,
         TASK_KIND_C2: 1, "c2_factor": 1, TASK_KIND_C2_FACTOR_BATCH: 1,
         TASK_KIND_SUPER_BATCH: 2, TASK_KIND_BATCH: 2,
     }
@@ -378,6 +469,8 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
         "c2_factor": len(c2_factor_combos),
         "bd8": len(bd8_combos),
         "elemab": len(elemab_combos),
+        "b_power": len(b_power_combos),
+        "c2_glue": len(c2_glue_combos),
         "burnside_m2": len(burnside_combos),
         "wreath_ra": len(wreath_combos),
         "wreath_via_2f": len(wreath_via_2f_combos),

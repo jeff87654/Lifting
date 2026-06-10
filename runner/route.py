@@ -1,8 +1,22 @@
 """Route selection and per-combo dispatch.
 
 `route(combo)` picks the cheapest path that applies to a combo: one of
-`bootstrap`, `c2_fast`, `bd8_fast`, `elemab_fast`, `distinguished`,
-`holt_split`, `burnside_m2`, `wreath_ra`, `wreath_via_2factor`.
+`bootstrap`, `c2_fast`, `b_power`, `bd8_fast`, `elemab_fast`,
+`distinguished`, `peel_c2_pair`, `holt_split`, `burnside_m2`, `wreath_ra`,
+`wreath_via_2factor`.
+
+`peel_c2_pair` added 2026-05-23 for combos with `(2,1)^2 + heavy^k` and no
+mult-1 species (where `distinguished` doesn't apply).  Peels both (2,1)s
+to RIGHT as a subgroup-list (RIGHT_combo=[2,1]_[2,1], 2 entries) so the
+heavy cluster becomes LEFT and benefits from cheaper LEFT-side H_CACHE
+per-entry cost.  Confirmed 6.6x speedup on [2,1]_[2,1]_[8,22]_[8,22]
+(4.7h holt_split -> 42min peel_c2_pair).
+
+The 2026-05-15 `b2g3_v3` route was removed 2026-05-21: it produced source
+files in a format `predict_2factor_topt.py:resolve_inputs` didn't accept,
+which cascaded into "resolve_inputs failed: unknown mode: b2g3_v3" errors
+at higher n.  The mixed Frattini / D_8+S_4 / pure-S_4 combos it claimed
+now fall through to the regular `distinguished`/`holt_split` routes.
 
 `run_combo(...)` actually executes the picked route — invokes the relevant
 predictor, handles fall-through from the fast paths to the generic routes
@@ -24,6 +38,9 @@ from pathlib import Path
 
 from runner.combos import combo_filename
 from runner.constants import (
+    B_POWER_TG,
+    DISABLE_B_POWER,
+    DISABLE_C2_GLUE,
     ELEM_AB_TG,
     FORCE_WREATH_2F,
     FORCE_WREATH_RA,
@@ -33,8 +50,71 @@ from runner.constants import (
 from runner.predictors import run_predictor
 
 
+def b_power_capable(combo):
+    """True iff the b_power pure-power engine should own this combo.
+    Pure power TG(d,t)^k with k >= 2 and (d,t) in B_POWER_TG."""
+    if DISABLE_B_POWER:
+        return False
+    if len(combo) < 2:
+        return False
+    if not all(pair == combo[0] for pair in combo):
+        return False
+    return combo[0] in B_POWER_TG
+
+
+def _classify_split(combo):
+    """Split-geometry class, shared by route() and the run_combo() fast-path
+    fall-throughs.  Returns one of: distinguished, peel_c2_pair, holt_split,
+    burnside_m2, wreath.  "wreath" (single species, mult >= 3) defers the
+    wreath_ra vs wreath_via_2factor choice to the caller (see _resolve_wreath).
+
+    NOTE: c2_factor route removed 2026-05-11 (naive RepresentativeAction-in-S_n
+    dedup ran for hours); `[2,1]_[Q,*]` now falls through to "distinguished".
+    """
+    clusters = Counter(combo)
+    if any(mult == 1 for mult in clusters.values()):
+        return "distinguished"
+    # (2,1)^2 + heavy^k: peel both (2,1)s to RIGHT so the heavy cluster becomes
+    # LEFT (cheaper H_CACHE/entry).  Confirmed 6.6x on [2,1]_[2,1]_[8,22]_[8,22]
+    # (4.7h holt_split -> 42min peel_c2_pair).  GATE FIXED 2026-05-23: was `>= 2`,
+    # which over-counted mult=3 cases like [2,1]^3 [3,1]^2 (+2) / [2,1]^3 [3,2]^2
+    # (+38) — peeling 2 of 3 strands a [2,1] on LEFT.  Restricted to mult EXACTLY 2.
+    if clusters.get((2, 1), 0) == 2 and len(clusters) >= 2:
+        return "peel_c2_pair"
+    if len(clusters) >= 2:
+        return "holt_split"
+    sp, mult = next(iter(clusters.items()))
+    if mult == 2:
+        return "burnside_m2"
+    return "wreath"
+
+
+def _resolve_wreath(combo, honor_force=True):
+    """Resolve a single-species wreath combo to wreath_ra or wreath_via_2factor.
+
+    The 2-step wreath_via_2factor pipeline:
+      (1) predict_2factor_topt --mode holt_split -> emits W_LR-deduped candidates
+          as fps.g (qfree3/H_CACHE optimizations);
+      (2) predict_full_general_wreath --candidates-from fps.g -> bucketize +
+          RA-in-W dedup, correctly deduped under the block-wreath W = N_T wr S_m.
+    It pays two GAP startups + two materialization passes; it wins on large
+    repeated-cluster cases but loses to the direct wreath route for small n.
+
+    `honor_force=False` reproduces the b_power fall-through, which historically
+    ignores the FORCE_WREATH_* overrides and decides purely on size.
+    """
+    if honor_force and FORCE_WREATH_RA:
+        return "wreath_ra"
+    if honor_force and FORCE_WREATH_2F:
+        return "wreath_via_2factor"
+    total_n = sum(d for d, _ in combo)
+    return "wreath_ra" if total_n < WREATH_2F_MIN_N else "wreath_via_2factor"
+
+
 def route(combo):
-    """Return route name string."""
+    """Return route name string.  Three transparent tiers: (1) fast paths,
+    (2) split geometry (_classify_split), (3) wreath resolution."""
+    # ---- Tier 1: fast paths ----
     if len(combo) == 1:
         return "bootstrap"
     partition = sorted([d for d, _ in combo], reverse=True)
@@ -42,45 +122,36 @@ def route(combo):
     # Mixed combos with non-2 prefix go through the regular routes.
     if len(partition) >= 2 and all(d == 2 for d in partition):
         return "c2_fast"
+    # b_power pure-power engine: pure TG(d,t)^k for k >= 2 and (d,t) in
+    # B_POWER_TG = {(3,1) C3, (3,2) S3, (4,1) C4, (4,2) V4, (4,3) D8}.
+    # Sits before bd8_fast / elemab_fast so it preempts them for these cases.
+    if b_power_capable(combo):
+        return "b_power"
     # D_8 Frattini-factor fast path: pure [4,3]^k (T(4,3) = D_8).
     if all(pair == (4, 3) for pair in combo):
         return "bd8_fast"
     # Elementary abelian fast path: pure [(d,t)]^k with (d,t) in ELEM_AB_TG.
-    # Generalizes b21 ([2,1]^k) to other elem-ab factors via GL_m(F_p) wr S_k
-    # orbit enumeration in b_elemab.g.
+    # Generalizes b21 ([2,1]^k) to other elem-ab factors via GL_m(F_p) wr S_k.
     if all(pair == combo[0] for pair in combo) and combo[0] in ELEM_AB_TG:
         return "elemab_fast"
-    # NOTE: c2_factor route removed 2026-05-11.  It used naive
-    # RepresentativeAction-in-S_n dedup that ran for hours per combo on
-    # [2,1]_[18,*] etc.  `[2,1]_[Q,*]` now falls through to "distinguished"
-    # which uses proper Goursat dedup via the 2-factor predictor.
-    clusters = Counter(combo)
-    if any(mult == 1 for mult in clusters.values()):
-        return "distinguished"
-    if len(clusters) >= 2:
-        return "holt_split"
-    sp, mult = next(iter(clusters.items()))
-    if mult == 2:
-        return "burnside_m2"
-    # Single-cluster m>=3.  The 2-step pipeline:
-    #   (1) predict_2factor_topt --mode holt_split  -> emits W_LR-deduped
-    #       candidates as fps.g (uses qfree3/H_CACHE optimizations).
-    #   (2) predict_full_general_wreath --candidates-from fps.g  -> applies
-    #       the bucketize + RA-in-W dedup so the final count is correctly
-    #       deduped under the full block-wreath ambient W = N_T wr S_m.
-    #
-    # That pipeline pays two full GAP startups and two materialization passes.
-    # It wins on the large repeated-cluster cases it was built for, but it is
-    # much slower than the direct wreath route for small n where the final
-    # candidate list has only tens or hundreds of groups.
-    if FORCE_WREATH_RA:
-        return "wreath_ra"
-    if FORCE_WREATH_2F:
-        return "wreath_via_2factor"
-    total_n = sum(d for d, _ in combo)
-    if total_n < WREATH_2F_MIN_N:
-        return "wreath_ra"
-    return "wreath_via_2factor"
+    # C2-glue streaming path (2026-06-09): exactly one (2,1) block forces the
+    # Goursat glue quotient set to {1, C2} against ANY other content, so every
+    # pairing is entry-local (Aut(C2)=1) and the LEFT H-cache is skipped
+    # entirely — run_c2_glue_path.py streams the n-2 source file.  These
+    # combos previously routed to `distinguished` (species mult 1).  The
+    # engine also supports (3,1)/(3,2) RIGHTs against 3-coprime LEFTs, but
+    # routing those needs a species-order check, so they stay on the general
+    # routes for now.  Opt-out: BUILD_SN_C2GLUE=0.
+    if not DISABLE_C2_GLUE and combo.count((2, 1)) == 1:
+        return "c2_glue"
+
+    # ---- Tier 2: split geometry ----
+    cls = _classify_split(combo)
+    if cls != "wreath":
+        return cls
+
+    # ---- Tier 3: wreath resolution (single species, mult >= 3) ----
+    return _resolve_wreath(combo)
 
 
 def run_combo(n, partition, combo, output_path, log_path, force=False,
@@ -110,16 +181,25 @@ def run_combo(n, partition, combo, output_path, log_path, force=False,
         if "error" not in result:
             return {"route": "c2_fast", "count": result["predicted"],
                     "elapsed_s": result["elapsed_s"]}
-        # Fall through to other routes if C_2 path rejected.
-        clusters = Counter(combo)
-        if any(mult == 1 for mult in clusters.values()):
-            route_name = "distinguished"
-        elif len(clusters) >= 2:
-            route_name = "holt_split"
-        elif clusters[next(iter(clusters))] == 2:
-            route_name = "burnside_m2"
-        else:
-            route_name = "wreath_ra"
+        # Fall through to other routes if C_2 path rejected.  This path keeps
+        # its historical wreath mapping: a wreath combo falls to wreath_ra
+        # (the direct route), not the 2-step pipeline.
+        cls = _classify_split(combo)
+        route_name = "wreath_ra" if cls == "wreath" else cls
+
+    # b_power pure-power engine (pure TG(d,t)^k for k >= 2, (d,t) in B_POWER_TG).
+    if route_name == "b_power":
+        result = run_predictor("run_b_power_path.py", combo_str,
+                                output_path, timeout=timeout)
+        if "error" not in result:
+            return {"route": "b_power", "count": result["predicted"],
+                    "elapsed_s": result["elapsed_s"]}
+        # Fall through: pick the legacy route this combo would otherwise take.
+        # Historically this path decides wreath purely on size (it does NOT
+        # honor the FORCE_WREATH_* overrides) -> honor_force=False.
+        cls = _classify_split(combo)
+        route_name = _resolve_wreath(combo, honor_force=False) \
+            if cls == "wreath" else cls
 
     # D_8 Frattini-factor fast path (pure [4,3]^k).
     if route_name == "bd8_fast":
@@ -141,7 +221,18 @@ def run_combo(n, partition, combo, output_path, log_path, force=False,
         # Fall through to wreath path on failure.
         route_name = "wreath_ra"
 
-    if route_name in ("distinguished", "holt_split", "burnside_m2"):
+    # C2-glue streaming path (exactly one (2,1) block).
+    if route_name == "c2_glue":
+        result = run_predictor("run_c2_glue_path.py", combo_str,
+                                output_path, timeout=timeout)
+        if "error" not in result:
+            return {"route": "c2_glue", "count": result["predicted"],
+                    "elapsed_s": result["elapsed_s"]}
+        # Fall through to the split-geometry route on failure (these combos
+        # are all species-mult-1 -> distinguished).
+        route_name = _classify_split(combo)
+
+    if route_name in ("distinguished", "holt_split", "burnside_m2", "peel_c2_pair"):
         result = run_predictor("predict_2factor_topt.py", combo_str, output_path,
                                 extra_args=["--mode", route_name, "--force"],
                                 timeout=timeout)

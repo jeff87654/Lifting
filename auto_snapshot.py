@@ -133,3 +133,5 @@ def main():
 if __name__ == "__main__":
     main()
 # watcher liveness test
+# restarted 2026-05-26 (prior watcher wedged; nudge to flush pending commit)
+# restarted 2026-06-07 (prior watcher wedged ~8.5h; nudge to flush pending elem-abelian H-cache fix)
