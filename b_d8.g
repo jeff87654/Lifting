@@ -52,6 +52,19 @@ BD8_B := function(setup, u, v)
     return result * One(setup.F);
 end;
 
+# Asymmetric 2-cocycle f: Q x Q -> Z, from the BD8 lift formula.
+# lift_U(u) * lift_U(v) = lift_U(u+v) * lift_Z(f(u,v)).
+# At block i: f(u,v) = (u[2i-1] + u[2i]) * v[2i-1].
+# Note f + f^T = B (the commutator pairing), but f itself is asymmetric.
+BD8_F := function(setup, u, v)
+    local i, result;
+    result := List([1..setup.k], i -> Zero(setup.F));
+    for i in [1..setup.k] do
+        result[i] := (u[2*i-1] + u[2*i]) * v[2*i-1];
+    od;
+    return result * One(setup.F);
+end;
+
 # S_k action on Q: permute blocks via sigma in Sym(k).
 BD8_PermQ := function(setup, sigma, u)
     local v, i, ip;
@@ -292,7 +305,8 @@ BD8_LiftOrbitReps := function(setup, U_rec, C_rec)
     local U, C, U_dim, C_dim, ZC_dim, L_dim, basis_U, hom_ZC, basis_ZC,
           basis_ZC_lifts, R_basis, w, ell_w, L, R, E_size, sigma, sigma_inv,
           M, N, action, e_canon, e_reps_keys, e_reps, idx, i, j, v,
-          perm_list, sig_perm, orbits, L_list, r_red, orbit_reps, hom_LR;
+          perm_list, sig_perm, orbits, L_list, r_red, orbit_reps, hom_LR,
+          delta_flat, perm_list2, z_correction;
     U := U_rec.U;
     C := C_rec.C;
     U_dim := Dimension(U);
@@ -344,6 +358,14 @@ BD8_LiftOrbitReps := function(setup, U_rec, C_rec)
     fi;
 
     # Build sigma-permutation on e_reps.
+    # The action of sigma on ell in Hom(U, Z/C) is AFFINE, not linear:
+    #     (sigma * ell)(b_i) = sigma_Z(ell(sigma_U^-1(b_i)))
+    # Because ell is a 1-cocycle (not a Hom) over the central extension,
+    # expanding ell at a sum sigma_U^-1(b_i) = sum_k M[i][k] b_k produces a
+    # cocycle correction: ell(b_{j1}+...+b_{jn}) = sum_k ell(b_{jk}) +
+    # sum_{k=2..n} f(s_{k-1}, b_{jk}) where s_k = b_{j1}+...+b_{jk} and f is
+    # the asymmetric 2-cocycle from the lift (BD8_F).  delta_sigma carries
+    # this correction; the action is then linear-part(v) + delta_sigma.
     perm_list := [];
     for sigma in C_rec.stab do
         sigma_inv := Inverse(sigma);
@@ -352,6 +374,25 @@ BD8_LiftOrbitReps := function(setup, U_rec, C_rec)
         N := List(basis_ZC_lifts,
             b -> AsList(Image(hom_ZC, BD8_PermZ(setup, sigma, b))))
             * One(setup.F);
+        # Build the affine shift delta_sigma in L.
+        delta_flat := [];
+        for i in [1..U_dim] do
+            perm_list2 := Filtered([1..U_dim],
+                jj -> M[i][jj] = One(setup.F));
+            z_correction := Zero(setup.Z);
+            if Length(perm_list2) >= 2 then
+                v := ShallowCopy(basis_U[perm_list2[1]]);
+                for j in [2..Length(perm_list2)] do
+                    z_correction := z_correction +
+                        BD8_F(setup, v, basis_U[perm_list2[j]]);
+                    v := v + basis_U[perm_list2[j]];
+                od;
+            fi;
+            # Apply sigma_Z to the correction (block-permute), then project to Z/C.
+            Append(delta_flat,
+                AsList(Image(hom_ZC,
+                    BD8_PermZ(setup, sigma, z_correction))) * One(setup.F));
+        od;
         action := function(v_in)
             local result, ii, jj, chunk, tj;
             result := [];
@@ -365,7 +406,7 @@ BD8_LiftOrbitReps := function(setup, U_rec, C_rec)
                 od;
                 Append(result, chunk);
             od;
-            return e_canon(result * One(setup.F));
+            return e_canon((result + delta_flat) * One(setup.F));
         end;
         sig_perm := PermList(List(e_reps,
             r -> PositionSorted(e_reps_keys, action(r))));
@@ -463,7 +504,8 @@ end;
 WriteBD8File := function(k, output_path)
     local setup, blocks, U_orbits, U_rec, C_orbits, C_rec, t0, fout,
           total, all_triples, lift_res, ell_rep, gens, line, u_idx, t_hb,
-          n_triples, combo_pairs, write_idx, u_cache_path, u_cache_dir;
+          n_triples, combo_pairs, write_idx, u_cache_path, u_cache_dir,
+          bd8_cs_sum, bd8_fact;
     setup := BD8_Setup(k);
     blocks := BD8_BlockData(k);
     t0 := Runtime();
@@ -510,6 +552,18 @@ WriteBD8File := function(k, output_path)
     Print("[BD8w] total reps: ", total,
           " (enum+orbit_ms=", Runtime() - t0, ")\n");
 
+    # HARVEST: compute class_sum via UC telescoping.  Per (U,C):
+    #   sum_l cs = (4k)! * 2^L_dim / (8^k * |C_rec.stab|),  L_dim=U_dim*(k-C_dim)
+    # Validated in b_d8_harvest.g; inlined here so no circular Read.
+    bd8_cs_sum := 0;
+    bd8_fact := Factorial(4 * k);
+    for U_rec in U_orbits do
+        for C_rec in BD8_EnumerateCorbits(setup, U_rec) do
+            bd8_cs_sum := bd8_cs_sum + bd8_fact *
+                2^(Dimension(U_rec.U) * (setup.k - Dimension(C_rec.C))) /
+                (8^setup.k * Length(C_rec.stab));
+        od;
+    od;
     fout := OutputTextFile(output_path, false);
     SetPrintFormattingStatus(fout, false);
     combo_pairs := List([1..k], i -> [4, 3]);
@@ -517,6 +571,7 @@ WriteBD8File := function(k, output_path)
     PrintTo(fout, "# candidates: ", total, "\n");
     PrintTo(fout, "# deduped: ", total, "\n");
     PrintTo(fout, "# elapsed_ms: ", Runtime() - t0, "\n");
+    PrintTo(fout, "# class_sum: ", bd8_cs_sum, "\n");
     t_hb := Runtime();
     for write_idx in [1..total] do
         gens := BD8_MaterializeTriple(setup, blocks,
