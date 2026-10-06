@@ -282,6 +282,18 @@ Engines
   (`|T(d,t)|`, used by the router).
 - `HCACHE_STREAMING_PROPOSAL.md`: design notes for the streaming H-cache.
 
+## Citing and license
+
+To cite this work, use GitHub's "Cite this repository" button (generated from
+`CITATION.cff`), or cite: Jeffrey Ketchersid, *Conjugacy classes of
+subgroups of the symmetric groups S_n, n ≤ 21*,
+https://github.com/jeff87654/Lifting.
+
+The code is released under the MIT License (`LICENSE`). The data — the
+`parallel_sn_*.tar.xz` archives and `combo_class_counts_s2_s21.csv.gz` — is
+released under CC BY 4.0 (`LICENSE-DATA`): you may use it for any purpose,
+provided you give credit.
+
 ## References
 
 - D. F. Holt, *Enumerating subgroups of the symmetric group*, in

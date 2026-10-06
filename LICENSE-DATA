@@ -1,0 +1,20 @@
+Data license
+
+The computed data in this repository and its releases are licensed under the
+Creative Commons Attribution 4.0 International License (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+This covers:
+  - parallel_sn_1_17.tar.xz, parallel_sn_18.tar.xz, parallel_sn_19.tar.xz
+  - parallel_sn_20.tar.xz and parallel_sn_21.tar.xz (GitHub releases)
+  - combo_class_counts_s2_s21.csv.gz
+
+You may share and adapt the data for any purpose, including commercially,
+provided you give appropriate credit, for example by citing:
+
+  Jeffrey Ketchersid, "Conjugacy classes of subgroups of the symmetric
+  groups S_n, n <= 21", https://github.com/jeff87654/Lifting
+
+Copyright (c) 2026 Jeffrey Ketchersid
+
+The source code is licensed separately under the MIT License (see LICENSE).

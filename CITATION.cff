@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this data or software, please cite it as below."
+title: "Conjugacy classes of subgroups of the symmetric groups S_n, n <= 21"
+type: dataset
+authors:
+  - family-names: Ketchersid
+    given-names: Jeffrey
+version: "1.0"
+date-released: 2026-10-05
+repository-code: "https://github.com/jeff87654/Lifting"
+license:
+  - MIT
+  - CC-BY-4.0
+abstract: >-
+  Complete lists of representatives of the conjugacy classes of subgroups of
+  the symmetric groups S_n for n <= 21, with the code that computed them.
+  The computation extends OEIS A000638 (a(19) = 16,745,233,
+  a(20) = 104,994,596, a(21) = 245,393,739) and A000637, and gives new terms
+  of the labelled sequences A005432 and A116693 for n = 19..21.
+keywords:
+  - symmetric group
+  - conjugacy classes of subgroups
+  - permutation groups
+  - computational group theory
+  - GAP
+  - OEIS A000638
