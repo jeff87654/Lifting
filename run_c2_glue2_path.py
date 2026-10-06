@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
 """
-run_c2_glue_path.py — streaming C2-glue engine driver.
+run_c2_glue2_path.py — streaming C2^2-glue engine driver (peel_c2_pair family).
 
-For a distinguished combo X_[d,t] whose RIGHT block (d,t) forces the Goursat
-glue quotient set down to {1, C2} — (2,1) against ANY X, or (3,1)/(3,2)
-against an X with no species order divisible by 3 — the classes are
-entry-local (Aut(C2) trivial: no aut-saturation, no double cosets, no
-cross-pair dedup).  This driver therefore streams X's already-built output
-.g file line by line through c2_glue_path_writer.g instead of building /
-loading a LEFT H-cache: O(1) memory, no cache serialization, and the work
-shards trivially by source-line ranges (the per-LEFT cache build is
-single-worker in the general engine).
-
-Motivation: n=22 `[2,1]_[4,3]^5` routes distinguished with a D8^5 LEFT
-H-cache of ~1.6M entries — infeasible to materialize; this path sidesteps
-the cache entirely.
+For combos with EXACTLY TWO (2,1) blocks plus a non-degree-2 cluster X, the
+RIGHT cluster's structure is fixed and tiny (two FPF classes: C2^2 and the
+diagonal C2; glue quotients {1, C2, V4}; Aut collapse under the block-swap
+D8 hand-derived), so every class is entry-local per LEFT line: X's already
+built output .g is streamed line by line through c2_glue2_path_writer.g —
+no LEFT H-cache, O(1) memory.  Replaces the general peel_c2_pair pair loop
+(the n=20 `[2,1]^2_[4,3]^4` monster: 3.88M classes at ~5 ms/class there).
 
 Usage (single combo):
-    python run_c2_glue_path.py --combo "[2,1]_[4,3]_[4,3]" \
-        --output-path out.g --source-dir parallel_sn_opt0610
+    python run_c2_glue2_path.py --combo "[2,1]_[2,1]_[4,3]" \
+        --output-path out.g --source-dir parallel_sn_topt_fresh_0604
 
 Batch (one GAP session for many combos; used by the validation sweep):
-    python run_c2_glue_path.py --batch-json jobs.json --source-dir ...
+    python run_c2_glue2_path.py --batch-json jobs.json --source-dir ...
     # jobs.json: [{"combo": "...", "output_path": "..."}, ...]
 """
 from __future__ import annotations
@@ -34,17 +28,12 @@ import time
 from pathlib import Path
 
 ROOT = Path(r"C:\Users\jeffr\Downloads\Lifting")
-TEMPLATE = ROOT / "c2_glue_path_writer.g"
+TEMPLATE = ROOT / "c2_glue2_path_writer.g"
 TMP_DIR = Path(os.environ.get(
-    "PREDICT_TMP_DIR", str(ROOT / "predict_species_tmp" / "_c2_glue")))
+    "PREDICT_TMP_DIR", str(ROOT / "predict_species_tmp" / "_c2_glue2")))
 
 GAP_BASH = r"C:\Program Files\GAP-4.15.1\runtime\bin\bash.exe"
 GAP_HOME = "/cygdrive/c/Program Files/GAP-4.15.1/runtime/opt/gap-4.15.1"
-
-# RIGHT blocks this path supports, in preference order.  (2,1) admits any
-# LEFT; (3,2)/(3,1) additionally require 3 coprime to the LEFT species
-# orders (checked GAP-side, which reports RESULT_NA otherwise).
-RIGHT_CANDIDATES = [(2, 1), (3, 2), (3, 1)]
 
 
 def to_cyg(p) -> str:
@@ -75,33 +64,6 @@ def partition_dir(degrees) -> str:
     return "[" + ",".join(str(d) for d in sorted(degrees, reverse=True)) + "]"
 
 
-def choose_right(combo):
-    """Pick the RIGHT block: a supported (d,t) with species-multiplicity
-    exactly 1 (multiplicity 1 is what makes the RIGHT block setwise fixed
-    by N_{S_n}, which the fusion/labelled math relies on)."""
-    for cand in RIGHT_CANDIDATES:
-        if combo.count(cand) == 1:
-            return cand
-    return None
-
-
-def source_class_sum(src):
-    """The source's `# class_sum:` header (labelled count Σ m!/|N(B_i)|),
-    or -1 when absent.  A (3,1) RIGHT needs no per-line normalizer when this
-    is known: cs scales in closed form (see the GAP template)."""
-    try:
-        with src.open("r", encoding="utf-8") as f:
-            for line in f:
-                if not line.startswith("#"):
-                    break
-                m = re.match(r"#\s*class_sum:\s*(\d+)", line)
-                if m:
-                    return int(m.group(1))
-    except OSError:
-        pass
-    return -1
-
-
 def source_deduped_header(src):
     """The source's `# deduped:` header (its own class count), or None when
     absent.  Used to cross-check the streamed line count: a truncated source
@@ -121,22 +83,19 @@ def source_deduped_header(src):
 
 
 def build_job(combo_str, output_path, source_dir, idx=0, work=None):
-    """Resolve eligibility + the LEFT source file; return a job dict or
-    {"error": ...}."""
     combo = parse_combo(combo_str)
-    if len(combo) < 2:
-        return {"error": "single-block combo (bootstrap territory)"}
-    right = choose_right(combo)
-    if right is None:
-        return {"error": "no supported multiplicity-1 RIGHT block "
-                         "((2,1)/(3,2)/(3,1))"}
+    if combo.count((2, 1)) != 2:
+        return {"error": "needs exactly two (2,1) blocks"}
     x_combo = list(combo)
-    x_combo.remove(right)
+    x_combo.remove((2, 1))
+    x_combo.remove((2, 1))
     x_combo = tuple(x_combo)
+    if not x_combo:
+        return {"error": "pure [2,1]^2 is c2_fast territory"}
+    if any(d == 2 for d, _ in x_combo):
+        return {"error": "more than two degree-2 blocks"}
     m = sum(d for d, _ in x_combo)
-    n = m + right[0]
-    # resolve(): GAP's cwd is the GAP home dir, so a relative --source-dir
-    # would silently fail InputTextFile (RESULT_NA source_unreadable).
+    n = m + 4
     src = (Path(source_dir).resolve() / str(m)
            / partition_dir([d for d, _ in x_combo])
            / (combo_to_str(x_combo) + ".g"))
@@ -148,13 +107,11 @@ def build_job(combo_str, output_path, source_dir, idx=0, work=None):
     return {
         "combo": combo,
         "combo_str": combo_to_str(combo),
-        "right": right,
         "x_combo": x_combo,
         "m": m,
         "n": n,
         "src": src,
         "src_deduped": src_deduped,
-        "cs_src": source_class_sum(src) if right == (3, 1) else -1,
         "output_path": Path(output_path),
         "body": (work / f"body_{idx}.g") if work else None,
     }
@@ -165,21 +122,14 @@ def gap_jobs_g(jobs) -> str:
     for j in jobs:
         xsp = "[" + ",".join(f"[{d},{t}]" for d, t in j["x_combo"]) + "]"
         xdeg = "[" + ",".join(str(d) for d, _ in j["x_combo"]) + "]"
-        window = ""
-        if j.get("line_lo") or j.get("line_hi"):
-            window = (f'    line_lo := {j.get("line_lo", 0)}, '
-                      f'line_hi := {j.get("line_hi", 0)},\n')
+        lo, hi = j.get("line_lo", 0), j.get("line_hi", 0)
         entries.append(
             f'rec(combo := "{j["combo_str"]}",\n'
             f'    src := "{to_gap(j["src"])}",\n'
             f'    body := "{to_gap(j["body"])}",\n'
-            f'    d := {j["right"][0]}, t := {j["right"][1]},\n'
             f'    m := {j["m"]}, n := {j["n"]},\n'
-            f'    cs_src := {j.get("cs_src", -1)},\n'
-            + window +
+            f'    line_lo := {lo}, line_hi := {hi},\n'
             f'    xdeg := {xdeg}, xsp := {xsp})')
-    # PRED_C2GLUE_CHECK=0 disables the per-line self-checks (orbit-sum
-    # identity + B<=P membership) for production-scale runs; default on.
     check = ("false" if os.environ.get("PRED_C2GLUE_CHECK") == "0"
              else "true")
     return (f"C2GLUE_CHECK := {check};\n"
@@ -187,7 +137,7 @@ def gap_jobs_g(jobs) -> str:
 
 
 def run_gap(work, jobs, timeout):
-    log = work / "c2glue.log"
+    log = work / "c2glue2.log"
     if log.exists():
         log.unlink()
     jobs_g = work / "jobs.g"
@@ -229,7 +179,7 @@ def assemble_output(job, res):
         f.write(f"# deduped: {res['predicted']}\n")
         f.write(f"# class_sum: {res['class_sum']}\n")
         f.write(f"# elapsed_ms: {res['elapsed_ms']}\n")
-        f.write("# engine: c2_glue_stream\n")
+        f.write("# engine: c2_glue2_stream\n")
         with job["body"].open("r", encoding="utf-8") as body:
             for line in body:
                 f.write(line)
@@ -237,8 +187,6 @@ def assemble_output(job, res):
 
 
 def run_combos(combo_specs, source_dir, timeout=0, work_name=None):
-    """combo_specs: list of (combo_str, output_path).  Runs all eligible
-    jobs in ONE GAP session; returns a list of per-combo result dicts."""
     t0 = time.time()
     work = TMP_DIR / (work_name or
                       re.sub(r"[^\w,\[\]-]", "_", combo_specs[0][0])[:80])
@@ -265,26 +213,22 @@ def run_combos(combo_specs, source_dir, timeout=0, work_name=None):
             m = by_combo[key]
             res = {
                 "combo": key,
-                "mode": "c2_glue_stream",
+                "mode": "c2_glue2_stream",
                 "predicted": int(m.group(2)),
                 "candidates": int(m.group(3)),
                 "class_sum": int(m.group(4)),
                 "n_source_lines": int(m.group(5)),
                 "elapsed_ms": int(m.group(6)),
-                # Per-job GAP time; the scheduler sums per-job elapsed_s, so
-                # don't charge every job the whole session's wall time.
                 "elapsed_s": round(int(m.group(6)) / 1000.0, 3),
                 "session_elapsed_s": elapsed,
                 "output_path": str(job["output_path"]),
             }
             # Source-integrity cross-check: the streamed line count must
             # equal the source's own # deduped: header.  A truncated source
-            # would otherwise become a complete-looking undercount here (and
-            # for a (3,1) RIGHT, a class_sum inconsistent with the body,
-            # since fast_c3 scales the WHOLE-file header).
+            # would otherwise become a complete-looking undercount here.
             if res["n_source_lines"] != job["src_deduped"]:
                 results.append({
-                    "combo": key, "mode": "c2_glue_stream",
+                    "combo": key, "mode": "c2_glue2_stream",
                     "error": (f"streamed {res['n_source_lines']} source lines"
                               f" but source header says # deduped: "
                               f"{job['src_deduped']} (truncated/corrupt "
@@ -293,10 +237,10 @@ def run_combos(combo_specs, source_dir, timeout=0, work_name=None):
             assemble_output(job, res)
             results.append(res)
         elif key in na_by_combo:
-            results.append({"combo": key, "mode": "c2_glue_stream",
+            results.append({"combo": key, "mode": "c2_glue2_stream",
                             "error": f"not applicable: {na_by_combo[key]}"})
         else:
-            results.append({"combo": key, "mode": "c2_glue_stream",
+            results.append({"combo": key, "mode": "c2_glue2_stream",
                             "error": "no RESULT in GAP log",
                             "log_tail": log_text[-2000:]})
     return results
@@ -320,17 +264,11 @@ def count_source_lines(src) -> int:
 def run_sharded(combo_str, output_path, source_dir, n_shards, timeout=0):
     """Fan a single combo out over n_shards parallel GAP sessions by source
     line range, then merge (sum headers, concat bodies).  Per-line work is
-    entry-local, so the merged deduped/class_sum are exact.  (3,1) RIGHTs
-    run single-session instead: their class_sum is computed in closed form
-    from the WHOLE source's header (a windowed closed form would overcount)
-    and their textual stream is I/O-bound anyway."""
+    independent, so the merged deduped/class_sum are exact."""
     import concurrent.futures as cf
     job = build_job(combo_str, output_path, source_dir)
     if "error" in job:
         return job
-    if job["right"] == (3, 1):
-        return run_combos([(combo_str, output_path)], source_dir,
-                          timeout=timeout)[0]
     total = count_source_lines(job["src"])
     if total != job["src_deduped"]:
         return {"combo": combo_str,
@@ -351,7 +289,6 @@ def run_sharded(combo_str, output_path, source_dir, n_shards, timeout=0):
             swork = TMP_DIR / f"{work.name}_{k}"
             swork.mkdir(parents=True, exist_ok=True)
             sjob = dict(job)
-            sjob["cs_src"] = -1   # windowed: no whole-file closed form
             sjob["body"] = swork / "body_0.g"
             sjob["line_lo"], sjob["line_hi"] = lo, hi
             sjob["output_path"] = work / f"shard_{k}.g"
@@ -364,7 +301,7 @@ def run_sharded(combo_str, output_path, source_dir, n_shards, timeout=0):
         return {"combo": combo_str, "error": f"shard failures: {bad[:3]}"}
     merged = {
         "combo": combo_str,
-        "mode": f"c2_glue_stream_x{n_shards}",
+        "mode": f"c2_glue2_stream_x{n_shards}",
         "predicted": sum(r["predicted"] for r in results),
         "candidates": sum(r["candidates"] for r in results),
         "class_sum": sum(r["class_sum"] for r in results),
@@ -382,7 +319,7 @@ def run_sharded(combo_str, output_path, source_dir, n_shards, timeout=0):
         f.write(f"# deduped: {merged['predicted']}\n")
         f.write(f"# class_sum: {merged['class_sum']}\n")
         f.write(f"# elapsed_ms: {merged['elapsed_ms']}\n")
-        f.write(f"# engine: c2_glue_stream shards={n_shards}\n")
+        f.write(f"# engine: c2_glue2_stream shards={n_shards}\n")
         for k in range(n_shards):
             with (work / f"shard_{k}.g").open("r", encoding="utf-8") as bf:
                 for line in bf:
@@ -418,13 +355,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--combo")
     ap.add_argument("--output-path")
-    ap.add_argument("--batch-json",
-                    help="JSON list of {combo, output_path} run in one "
-                         "GAP session")
+    ap.add_argument("--batch-json")
     ap.add_argument("--shards", type=int, default=1,
                     help="fan a single combo over N parallel GAP sessions "
-                         "by source line range; counts merge exactly "
-                         "(ignored for (3,1) RIGHTs)")
+                         "by source line range; counts merge exactly")
     ap.add_argument("--source-dir",
                     default=os.environ.get("PREDICT_SN_DIR",
                                            str(ROOT / "parallel_sn_opt0610")))
@@ -443,9 +377,6 @@ def main():
         bj = Path(args.batch_json)
         specs = [(j["combo"], j["output_path"])
                  for j in json.loads(bj.read_text())]
-        # Work dir keyed by the batch file's parent dir (the scheduler makes
-        # one dir per chunk) — a bare "jobs.json" stem would collide across
-        # concurrently-running chunks.
         results = run_combos(specs, args.source_dir, timeout=args.timeout,
                              work_name=f"{bj.parent.name}_{bj.stem}")
         print(json.dumps(results, indent=2))

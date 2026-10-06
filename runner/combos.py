@@ -174,20 +174,62 @@ def is_complete_combo_file(path):
         rec = _complete_cache.get(os.path.abspath(str(path)))
         if rec is not None and rec[0] == st.st_size and rec[1] == st.st_mtime_ns:
             return True
+    # Stream line-by-line (O(1) memory) rather than slurping the whole file --
+    # multi-GB monster combos otherwise load the file x3 (read + re.sub joined +
+    # splitlines list) into RAM, risking OOM during the dispatch/recount passes.
+    # A generator line may wrap across physical lines via a trailing "\"; only
+    # the first physical line of each logical line starts with "[", so count "["
+    # starters that are NOT continuations of the previous physical line -- this
+    # reproduces the old `re.sub(r"\\\r?\n","")` + count-lines-starting-"[" logic.
+    expected = None
+    actual = 0
+    prev_continued = False
     try:
         with open(path, encoding="utf-8") as f:
-            text = f.read()
+            for raw in f:
+                line = raw.rstrip("\n").rstrip("\r")
+                if not prev_continued:
+                    if line.startswith("["):
+                        actual += 1
+                    elif expected is None and line.startswith("# deduped:"):
+                        md = re.match(r"# deduped:\s*(\d+)\s*$", line)
+                        if md:
+                            expected = int(md.group(1))
+                prev_continued = line.endswith("\\")
     except (OSError, UnicodeError):
         return False
-    # Strip GAP line-continuation characters ("\<newline>") so generator lines
-    # that wrap across multiple physical lines count as one.
-    joined = re.sub(r"\\\r?\n", "", text)
-    m = re.search(r"^# deduped:\s*(\d+)\s*$", joined, re.MULTILINE)
-    if not m:
-        return False
-    expected = int(m.group(1))
-    actual = sum(1 for ln in joined.splitlines() if ln.startswith("["))
-    if actual != expected:
+    # expected < 1 is always wrong: every combo has at least the block direct
+    # product as a class, so a "# deduped: 0" header marks a bad/placeholder
+    # file that must be recomputed, not skipped as complete.
+    if expected is None or expected < 1 or actual != expected:
         return False
     _cache_mark_complete(path, st)
     return True
+
+
+def read_combo_count_headers(path):
+    """Return (deduped, class_sum) ints from a combo .g's leading headers.
+
+    Reads line-by-line and stops as soon as both are found -- they live in the
+    first few lines, before any generator line -- so a multi-GB monster body is
+    never slurped into RAM.  Either value is None if absent (caller falls back
+    to the labelled sidecar for a missing class_sum)."""
+    deduped = None
+    class_sum = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip("\n").rstrip("\r")
+                if deduped is None and line.startswith("# deduped:"):
+                    md = re.match(r"# deduped:\s*(\d+)", line)
+                    if md:
+                        deduped = int(md.group(1))
+                elif class_sum is None and line.startswith("# class_sum:"):
+                    mc = re.match(r"# class_sum:\s*(\d+)", line)
+                    if mc:
+                        class_sum = int(mc.group(1))
+                if deduped is not None and class_sum is not None:
+                    break
+    except (OSError, UnicodeError):
+        pass
+    return deduped, class_sum

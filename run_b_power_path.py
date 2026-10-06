@@ -62,7 +62,15 @@ def run_b_power(combo_str: str, output_path, timeout: int = 3600) -> dict:
         log.unlink()
     run_g = work / "run.g"
 
-    out_cyg = str(output_path).replace("\\", "/")
+    # GAP streams the combo file headers-first and non-atomically; write to
+    # a .tmp sibling and publish only after RESULT confirms completion, so a
+    # killed job can never leave a truncated file at the canonical path
+    # (glue/2-factor engines at higher n stream these files as sources).
+    out_final = Path(output_path)
+    out_tmp = out_final.with_suffix(out_final.suffix + ".tmp")
+    if out_tmp.exists():
+        out_tmp.unlink()
+    out_cyg = str(out_tmp).replace("\\", "/")
     run_g.write_text(
         'LogTo("' + to_cyg(log) + '");\n'
         'Read("C:/Users/jeffr/Downloads/Lifting/b_power/power_dispatch.g");\n'
@@ -104,6 +112,11 @@ def run_b_power(combo_str: str, output_path, timeout: int = 3600) -> dict:
                 "log_tail": log_text[-2000:],
                 "elapsed_s": elapsed}
     total = int(m.group(1))
+    if not out_tmp.exists():
+        return {"error": f"b_power: RESULT but no output written: {out_tmp}",
+                "elapsed_s": elapsed}
+    out_final.parent.mkdir(parents=True, exist_ok=True)
+    out_tmp.replace(out_final)
     return {
         "combo": "_".join(f"[{d_},{t_}]" for d_, t_ in combo),
         "mode": "b_power",

@@ -32,6 +32,13 @@ if not IsBound(USE_H1_ORBITAL) then
     USE_H1_ORBITAL := true;
 fi;
 
+# Enable the section-homomorphism fallback for outer H^1 actions.  The Pcgs
+# path remains preferred; this only runs when the quotient generators are not
+# an exact Pcgs, where the previous code returned fail to avoid FP words.
+if not IsBound(H1_OUTER_SECTION_ACTION) then
+    H1_OUTER_SECTION_ACTION := false;
+fi;
+
 # Statistics for orbit computation
 H1_ORBITAL_STATS := rec(
     calls := 0,
@@ -258,6 +265,126 @@ FactorizationInGenerators := function(G, g, gens)
 end;
 
 ###############################################################################
+# H1SectionHomFromCocycle(module, cocycleVec)
+#
+# Build the section homomorphism C_f -> G for the complement represented by a
+# cocycle.  This gives a cheap way to evaluate f(g) for non-Pcgs quotients:
+# if s_0(g) is the base section and s_f(g) is the complement section, then
+# f(g) is the M-component of s_0(g)^-1 * s_f(g).
+###############################################################################
+
+H1SectionHomFromCocycle := function(module, cocycleVec)
+    local G, Q, ngens, dim, pcgsM, p, sourceGens, targetGens,
+          i, fgi, mi, gen, C, phi;
+
+    G := module.group;
+    Q := module.ambientGroup;
+    ngens := Length(module.generators);
+    dim := module.dimension;
+    pcgsM := module.pcgsM;
+    p := module.p;
+
+    sourceGens := [];
+    targetGens := [];
+    for i in [1..ngens] do
+        fgi := cocycleVec{[(i-1)*dim + 1 .. i*dim]};
+        mi := CocycleValueToElement(fgi, pcgsM, p);
+        gen := module.preimageGens[i] * mi;
+        if gen <> One(Q) then
+            Add(sourceGens, gen);
+            Add(targetGens, module.generators[i]);
+        fi;
+    od;
+
+    if Length(sourceGens) = 0 then
+        if Size(G) = 1 then
+            return rec(group := TrivialSubgroup(Q),
+                       hom := GroupHomomorphismByImages(TrivialSubgroup(Q), G, [], []));
+        fi;
+        return fail;
+    fi;
+
+    C := Group(sourceGens);
+    phi := GroupHomomorphismByImages(C, G, sourceGens, targetGens);
+    if phi = fail then
+        return fail;
+    fi;
+    if not IsBijective(phi) then
+        return fail;
+    fi;
+
+    return rec(group := C, hom := phi);
+end;
+
+###############################################################################
+# H1BaseSectionHom(module)
+#
+# Build the base complement section C_0 -> G from module.preimageGens.
+###############################################################################
+
+H1BaseSectionHom := function(module)
+    local G, Q, sourceGens, targetGens, C, phi;
+
+    G := module.group;
+    Q := module.ambientGroup;
+    sourceGens := Filtered(module.preimageGens, g -> g <> One(Q));
+    targetGens := module.generators{Filtered([1..Length(module.preimageGens)],
+        i -> module.preimageGens[i] <> One(Q))};
+
+    if Length(sourceGens) = 0 then
+        if Size(G) = 1 then
+            return rec(group := TrivialSubgroup(Q),
+                       hom := GroupHomomorphismByImages(TrivialSubgroup(Q), G, [], []));
+        fi;
+        return fail;
+    fi;
+
+    C := Group(sourceGens);
+    phi := GroupHomomorphismByImages(C, G, sourceGens, targetGens);
+    if phi = fail then
+        return fail;
+    fi;
+    if not IsBijective(phi) then
+        return fail;
+    fi;
+
+    return rec(group := C, hom := phi);
+end;
+
+###############################################################################
+# H1EvaluateCocycleViaSections(module, baseSection, cocycleSection, g)
+#
+# Evaluate the cocycle represented by cocycleSection at g without constructing
+# an FP word in module.generators.
+###############################################################################
+
+H1EvaluateCocycleViaSections := function(module, baseSection, cocycleSection, g)
+    local G, dim, field, s0, sf, m, exps;
+
+    G := module.group;
+    dim := module.dimension;
+    field := module.field;
+
+    if g = One(G) then
+        return ListWithIdenticalEntries(dim, Zero(field));
+    fi;
+
+    s0 := PreImagesRepresentative(baseSection.hom, g);
+    sf := PreImagesRepresentative(cocycleSection.hom, g);
+    if s0 = fail or sf = fail then
+        return fail;
+    fi;
+
+    m := s0^(-1) * sf;
+    if not m in module.moduleGroup then
+        return fail;
+    fi;
+
+    exps := ExponentsOfPcElement(module.pcgsM, m);
+    return List(exps, x -> x * One(field));
+end;
+
+###############################################################################
 # ProjectToH1Coordinates(cohomRecord, cocycleVec)
 #
 # Given a cocycle vector in Z^1, find its coordinates in the H^1 basis.
@@ -442,6 +569,7 @@ ComputeOuterActionOnH1 := function(cohomRecord, module, n, S, L, homSL, P)
           fval, fval_conj, nInv, actionMatM,
           m, m_S, m_S_conj, m_Q_conj, exps,
           translationCocycle, translationH1, usePcgs, pcgsG,
+          useSection, baseSection, cocycleSection,
           s_conj, s_conj_S, rho_s_conj_S, rho_s_conj_Q,
           delta_elem, delta_exps, exps_g, word_g, w, kk;
 
@@ -479,6 +607,8 @@ ComputeOuterActionOnH1 := function(cohomRecord, module, n, S, L, homSL, P)
 
     # Determine if we can use Pcgs for section lift computation
     usePcgs := false;
+    useSection := false;
+    baseSection := fail;
     pcgsG := fail;
     if CanEasilyComputePcgs(G) then
         pcgsG := Pcgs(G);
@@ -489,9 +619,18 @@ ComputeOuterActionOnH1 := function(cohomRecord, module, n, S, L, homSL, P)
     fi;
 
     # For non-solvable G, FactorizationInGenerators uses IsomorphismFpGroupByGenerators
-    # which is extremely expensive. Return fail to fall back to non-orbital H^1.
+    # which is extremely expensive. Try a section-homomorphism action instead.
     if not usePcgs then
-        return fail;
+        if H1_OUTER_SECTION_ACTION then
+            baseSection := H1BaseSectionHom(module);
+            if baseSection <> fail then
+                useSection := true;
+            else
+                return fail;
+            fi;
+        else
+            return fail;
+        fi;
     fi;
 
     # Compute translation (affine part of the H^1 action).
@@ -521,6 +660,11 @@ ComputeOuterActionOnH1 := function(cohomRecord, module, n, S, L, homSL, P)
                     s_conj := s_conj * module.preimageGens[kk]^exps_g[kk];
                 fi;
             od;
+        elif useSection then
+            s_conj := PreImagesRepresentative(baseSection.hom, g_conj);
+            if s_conj = fail then
+                return fail;
+            fi;
         else
             word_g := FactorizationInGenerators(G, g_conj, module.generators);
             s_conj := One(Q);
@@ -558,6 +702,12 @@ ComputeOuterActionOnH1 := function(cohomRecord, module, n, S, L, homSL, P)
 
         # Get cocycle values f(g_j) for each generator g_j
         cocycleValues := CocycleVectorToValues(fullCocycle, module);
+        if useSection then
+            cocycleSection := H1SectionHomFromCocycle(module, fullCocycle);
+            if cocycleSection = fail then
+                return fail;
+            fi;
+        fi;
 
         # Compute transformed cocycle (linear part only)
         transformedCocycle := ListWithIdenticalEntries(ngens * dim, Zero(field));
@@ -572,7 +722,14 @@ ComputeOuterActionOnH1 := function(cohomRecord, module, n, S, L, homSL, P)
             g_conj := Image(quotientHom, gi_Q_conj);
 
             # Evaluate f at φ(g_j)
-            fval := EvaluateCocycleForElement(module, cocycleValues, g_conj);
+            if useSection then
+                fval := H1EvaluateCocycleViaSections(module, baseSection, cocycleSection, g_conj);
+                if fval = fail then
+                    return fail;
+                fi;
+            else
+                fval := EvaluateCocycleForElement(module, cocycleValues, g_conj);
+            fi;
 
             # Apply n^{-1} action on M_bar
             fval_conj := fval * actionMatM;

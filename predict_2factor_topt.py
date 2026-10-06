@@ -111,11 +111,19 @@ def _gap_run(cmd, env, timeout, diag_dir=None):
     """subprocess.run wrapper that handles "no timeout" mode safely.
     Avoids threading.Lock overflow on Windows for very large timeouts.
     If diag_dir is provided, writes proc.returncode/stderr/stdout to
-    diag_dir/_gap_diag.txt for post-mortem inspection."""
+    diag_dir/_gap_diag.txt for post-mortem inspection.
+
+    stdin=DEVNULL: a GAP Error() drops into the break loop, which reads
+    stdin.  With an inherited (open, silent) stdin the session hangs until
+    the subprocess timeout instead of dying; with stdin at EOF the break
+    loop exits immediately, so every die-loudly Error() in the drivers is a
+    fast clean death rather than a wedge."""
     if timeout is None or timeout <= 0 or timeout >= 86400 * 30:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
     else:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=timeout)
     if diag_dir is not None:
         try:
             from pathlib import Path as _Path
@@ -685,6 +693,10 @@ if not IsBound(STREAM_HCACHE_BUILD)              then STREAM_HCACHE_BUILD := 0; 
 if not IsBound(BUILD_TOKEN)                      then BUILD_TOKEN := "default"; fi;
 if not IsBound(HCACHE_BUILD_VER)                 then HCACHE_BUILD_VER := "1"; fi;
 if not IsBound(STREAM_WINDOW_MIN)                then STREAM_WINDOW_MIN := 20000; fi;
+# fail => BuildHCacheStreaming computes fresh; a <path> => it reads+extends that
+# old framed cache one entry at a time (memory-bounded extend).  The extend
+# wiring sets it just before the call and resets it after.
+if not IsBound(STREAM_EXTEND_FROM)               then STREAM_EXTEND_FROM := fail; fi;
 # Stage D (O_p-split glue quotients, PRED_STAGE_D; 2026-06-09): the real
 # symbols are bound by prototype_stage_d.g, Read in the preamble when
 # USE_LINEAR_ORBITS=1 and USE_STAGE_D=1.  Pre-declare so the dispatcher
@@ -719,6 +731,14 @@ if not IsBound(LinearOrbitRecsStageDMulti)       then LinearOrbitRecsStageDMulti
 # LEFTs (A_n/S_n/...) get the prune (cheap + needed); solvable/2-group LEFTs keep
 # the over-approximation (cheap + already tight).  Still count-neutral.
 if not IsBound(QPRUNE_MAXSUBS)                   then QPRUNE_MAXSUBS := 16; fi;
+# LEFT-realizable fast prune (2026-06-21): when every LEFT subgroup is a natural
+# A_n/S_n or simple group its quotient lattice is tiny, so the LEFT-realizable
+# Q-type set is read straight off NormalSubgroups(LEFT) and used to filter RIGHT
+# Q-discovery BEFORE the (IdGroup-less) pairwise IsomorphismGroups dedup in
+# QTypeIsNew.  COUNT-IDENTICAL to the GQuotients prune below (Q realizable by HL
+# <=> GQuotients(HL,Q)<>[]), but ms vs hours once RIGHT_Q_GROUPS is unioned over a
+# whole batch -- THE S8/S10-single-block-LEFT n=22 wedge.  Set 0 to disable.
+if not IsBound(USE_LEFT_REALIZABLE)              then USE_LEFT_REALIZABLE := 1; fi;
 if not IsBound(shift_R)                          then shift_R := fail; fi;
 if not IsBound(H_CACHE)                          then H_CACHE := fail; fi;
 if not IsBound(SUBGROUPS)                        then SUBGROUPS := fail; fi;
@@ -830,6 +850,52 @@ QTypeIsNew := function(state, Q)
     od;
     Add(state.unsafe_seen.(key), Q);
     return true;
+end;
+
+# --- LEFT-realizable Q-type fast path (see USE_LEFT_REALIZABLE) ----------------
+# Realizable nontrivial quotient TYPES of the LEFT subgroups, { HL/N : N normal in
+# HL, N <> HL }, deduped up to isomorphism -- but ONLY when every HL is a natural
+# A_n / S_n or a simple group (tiny normal lattice => NormalSubgroups is instant).
+# Returns fail otherwise (caller keeps the generic GQuotients prune).  This set is
+# exactly { Q : some HL surjects onto Q } = the GQuotients-prune survivor set
+# (Q realizable by HL  <=>  GQuotients(HL,Q) <> []), so filtering RIGHT discovery
+# to membership here is COUNT-IDENTICAL while skipping the lethal IsomorphismGroups
+# dedup of every (huge, IdGroup-less) RIGHT quotient type.
+LeftRealizableQTypesIfCheap := function(subs_left)
+    local reps, HL, N, Q, r, isnew;
+    if Length(subs_left) = 0 then return fail; fi;
+    for HL in subs_left do
+        if not (IsNaturalSymmetricGroup(HL) or IsNaturalAlternatingGroup(HL)
+                or IsSimpleGroup(HL)) then
+            return fail;
+        fi;
+    od;
+    reps := [];
+    for HL in subs_left do
+        for N in NormalSubgroups(HL) do
+            if Size(N) = Size(HL) then continue; fi;   # N = HL -> trivial quotient
+            Q := HL / N;
+            isnew := true;
+            for r in reps do
+                if Size(r) = Size(Q) and IsomorphismGroups(r, Q) <> fail then
+                    isnew := false; break;
+                fi;
+            od;
+            if isnew then Add(reps, Q); fi;
+        od;
+    od;
+    return reps;
+end;
+
+# True iff Q is isomorphic to some group in reps (cheap Size pre-filter first).
+QTypeInRepList := function(reps, Q)
+    local r;
+    for r in reps do
+        if Size(r) = Size(Q) and IsomorphismGroups(r, Q) <> fail then
+            return true;
+        fi;
+    od;
+    return false;
 end;
 
 # Load master catalog from path; cache in METAQCATALOG global.  Skip disk
@@ -1650,6 +1716,19 @@ ComputeOrLoadLeftQGroups := function(arg)
     return result;
 end;
 
+# Current GAP workspace size in KB (GASMAN total).  GASMAN("collect") populates
+# the .full stats and frees dead bags; the workspace itself only grows within a
+# session (with -o 0 it is never returned to the OS), so totalkb tracks the
+# process memory high-water -- the right signal for a memory-based checkpoint.
+# Returns 0 if stats unavailable (callers treat 0 as "under limit").
+CurrentWorkspaceKB := function()
+    local s;
+    GASMAN("collect");
+    s := GasmanStatistics();
+    if IsBound(s.full) then return s.full.totalkb; fi;
+    return 0;
+end;
+
 QIdsOfGroups := function(q_groups)
     if q_groups = fail then return fail; fi;
     return Set(List(q_groups, SafeId));
@@ -2351,37 +2430,51 @@ end;
 # Saves & restores any pre-existing global H_CACHE so this can run before
 # the LEFT cache is loaded.
 ForcedQRepsFromHCache := function(cache_path, cap)
-    local out, seen, entry, orb, Q, key, saved_H_CACHE, right_cache, H, K;
+    local out, qstate, entry, orb, Q, key, saved_H_CACHE, right_cache, H, K;
     out := [];
-    seen := Set([]);
+    qstate := NewQTypeState();
     if cache_path = "" or not IsExistingFile(cache_path) then return out; fi;
-    saved_H_CACHE := fail;
-    if IsBound(H_CACHE) then
-        saved_H_CACHE := H_CACHE;
+    if IsFramedCacheFile(cache_path) then
+        right_cache := ReadHCacheFramedFull(cache_path);
+        if not IsList(right_cache) then return out; fi;
+    else
+        saved_H_CACHE := fail;
+        if IsBound(H_CACHE) then
+            saved_H_CACHE := H_CACHE;
+            Unbind(H_CACHE);
+        fi;
+        Read(cache_path);
+        if not IsBound(H_CACHE) or not IsList(H_CACHE) then
+            if saved_H_CACHE <> fail then H_CACHE := saved_H_CACHE; fi;
+            return out;
+        fi;
+        right_cache := H_CACHE;
         Unbind(H_CACHE);
-    fi;
-    Read(cache_path);
-    if not IsBound(H_CACHE) or not IsList(H_CACHE) then
         if saved_H_CACHE <> fail then H_CACHE := saved_H_CACHE; fi;
-        return out;
     fi;
-    right_cache := H_CACHE;
-    Unbind(H_CACHE);
-    if saved_H_CACHE <> fail then H_CACHE := saved_H_CACHE; fi;
     for entry in right_cache do
         for orb in entry.orbits do
             if orb.qsize <= cap then continue; fi;
-            key := String(orb.qid);
-            if key in seen then continue; fi;
-            AddSet(seen, key);
             if orb.qid[2] = 0 then
+                # Exact id (SmallGroups library): the qid string IS a
+                # complete iso-invariant -- cheap string dedup, no group
+                # construction on repeats.
+                key := String(orb.qid);
+                if key in qstate.exact_seen then continue; fi;
+                AddSet(qstate.exact_seen, key);
                 Q := SmallGroup(orb.qid[3]);
             else
-                # Fallback: reconstruct via H/K.  H from this right-cache entry.
+                # Coarse id (no SmallGroups library, e.g. order 512/1024/
+                # 1536/>2000): distinct iso-classes can share the qid string,
+                # so a raw string dedup silently drops real Q-types (the
+                # 2026-05-26 QTypeIsNew bug class).  Reconstruct Q := H/K and
+                # disambiguate with the exact in-bucket IsomorphismGroups
+                # test.
                 H := Group(entry.H_gens);
                 K := Subgroup(H, orb.K_H_gens);
                 Q := Image(IsomorphismPermGroup(
                     Range(NaturalHomomorphismByNormalSubgroup(H, K))));
+                if not QTypeIsNew(qstate, Q) then continue; fi;
             fi;
             Add(out, rec(Q := Q, qsize := orb.qsize, qid := orb.qid,
                         source := "right-cache"));
@@ -3208,7 +3301,8 @@ SaveHCacheFramed := function(path, h_cache, header)
     local fullhdr, tmp, idxtmp, stream, off, offs, k, s, rnd;
     rnd := Concatenation(String(Runtime()), ".", String(Random([1..1000000])));
     fullhdr := Concatenation(header, "# hcache_framed: count=",
-                             String(Length(h_cache)), "\n");
+                             String(Length(h_cache)),
+                             " ver=", HCACHE_BUILD_VER, "\n");
     tmp := Concatenation(path, ".tmp.", rnd);
     stream := OutputTextFile(tmp, false);
     SetPrintFormattingStatus(stream, false);
@@ -3232,6 +3326,13 @@ SaveHCacheFramed := function(path, h_cache, header)
     PrintTo(idxtmp, "HCACHE_OFFSETS := ", offs, ";\n");
     Exec(Concatenation("mv -f -- '", idxtmp, "' '", path, ".idx'"));
     Exec(Concatenation("mv -f -- '", tmp, "' '", path, "'"));
+    # Verify the publish (Exec surfaces no return code): a silently-failed
+    # mv would leave a stale same-count cache at the canonical path, which
+    # downstream count checks alone cannot distinguish from ours.
+    if ReadEntryCountFromFile(path) <> Length(h_cache) then
+        Error("SaveHCacheFramed: publish verification failed at ", path,
+              " (mv failed silently?)");
+    fi;
 end;
 
 # True iff path is a framed cache: line 2 marker present AND sidecar exists.
@@ -3256,11 +3357,17 @@ end;
 
 ReadEntryCountFromFile := function(path)
     # Cheap on-disk H-cache entry count from the line-2 header:
-    #   framed     : "# hcache_framed: count=<N>"
-    #   monolithic : "# hcache_count: <N>"   (written since 2026-06-09)
+    #   framed     : "# hcache_framed: count=<N>[ ver=<V>]"
+    #   monolithic : "# hcache_count: <N>[ ver=<V>]"
     # Returns fail when the file is missing or carries no count header
     # (legacy monolithic file written before the count-aware save).
-    local f, l1, l2, prefix, payload, p;
+    # The optional ver= stamp (written since 2026-07-02) is ENFORCED here:
+    # a cache produced by a different HCACHE_BUILD_VER carries entries whose
+    # content the current enumeration code would compute differently, and
+    # silently reusing it is the stale-cache undercount class (see the
+    # hcache_reuse_across_code_changes lesson).  Legacy stamp-less files are
+    # grandfathered (all pre-stamp content is ver-1 compatible).
+    local f, l1, l2, prefix, payload, p, sp, vtok;
     if not IsExistingFile(path) then return fail; fi;
     f := InputTextFile(path);
     if f = fail then return fail; fi;
@@ -3273,7 +3380,21 @@ ReadEntryCountFromFile := function(path)
             p := Length(payload);
             while p > 0 and payload[p] in [' ', '\n', '\r', '\t'] do p := p - 1; od;
             if p = 0 then return fail; fi;
-            return Int(payload{[1..p]});
+            payload := payload{[1..p]};
+            sp := Position(payload, ' ');
+            if sp <> fail then
+                vtok := payload{[sp+1..Length(payload)]};
+                payload := payload{[1..sp-1]};
+                if Length(vtok) > 4 and vtok{[1..4]} = "ver="
+                   and vtok{[5..Length(vtok)]} <> HCACHE_BUILD_VER then
+                    Error("H-cache at ", path, " was built by enum version ",
+                          vtok{[5..Length(vtok)]}, " but this code is version ",
+                          HCACHE_BUILD_VER, ".  Entry content is not ",
+                          "compatible across versions -- delete the cache ",
+                          "file (or use a fresh --h-cache dir) and rerun.");
+                fi;
+            fi;
+            return Int(payload);
         fi;
     od;
     return fail;
@@ -3314,6 +3435,7 @@ end;
 # Replaces a bare `Read(path)` that set the global H_CACHE; callers assign the
 # return to H_CACHE.  (Monolithic Read sets global H_CACHE, which we return.)
 ReadHCacheAuto := function(path)
+    ReadEntryCountFromFile(path);   # side effect: Errors on a ver= mismatch
     if IsFramedCacheFile(path) then return ReadHCacheFramedFull(path); fi;
     Read(path);
     return H_CACHE;
@@ -3323,27 +3445,46 @@ end;
 # returns true; returns false (caller must full-load) on a torn write where the
 # header count= disagrees with the sidecar length.
 OpenHCacheWindow := function(path)
-    local f, l1, l2, prefix, payload, p, marker_count;
+    local f, l1, l2, prefix, marker_count, k;
     if not IsExistingFile(Concatenation(path, ".idx")) then return false; fi;
     Read(Concatenation(path, ".idx"));   # -> HCACHE_OFFSETS
     if not IsBound(HCACHE_OFFSETS) or HCACHE_OFFSETS = fail
        or Length(HCACHE_OFFSETS) < 1 then return false; fi;
     HCW_OFFSETS := HCACHE_OFFSETS;
     HCW_COUNT := Length(HCW_OFFSETS) - 1;
+    # Require the framed marker specifically (a monolithic file paired with
+    # a stale sidecar must not window), then reuse ReadEntryCountFromFile
+    # for the count parse -- it also ENFORCES the ver= stamp (Errors loudly
+    # on an enum-version mismatch rather than falling back to a full read
+    # of stale entries).
     f := InputTextFile(path);
     if f = fail then return false; fi;
     l1 := ReadLine(f); l2 := ReadLine(f); CloseStream(f);
     prefix := "# hcache_framed: count=";
     if l2 = fail or Length(l2) < Length(prefix)
        or l2{[1..Length(prefix)]} <> prefix then return false; fi;
-    payload := l2{[Length(prefix)+1..Length(l2)]};
-    p := Length(payload);
-    while p > 0 and payload[p] in [' ', '\n', '\r', '\t'] do p := p - 1; od;
-    payload := payload{[1..p]};
-    marker_count := Int(payload);
+    marker_count := ReadEntryCountFromFile(path);
     if marker_count = fail or marker_count <> HCW_COUNT then return false; fi;
     HCW_STREAM := InputTextFile(path);
-    return HCW_STREAM <> fail;
+    if HCW_STREAM = fail then return false; fi;
+    # Probe-parse the first and last entries.  The publish is two separate
+    # `mv`s (.idx then .g, Exec rc unchecked), so a torn or silently-failed
+    # publish can leave a NEW sidecar over an OLD same-count .g (or vice
+    # versa) that passes the count cross-check while its offsets point
+    # mid-line.  A failed probe returns false -> callers fall back to the
+    # full read (ReadHCacheFramedFull ignores the sidecar), never trusting
+    # misaligned windowed seeks.
+    if HCW_COUNT > 0 then
+        for k in Set([1, HCW_COUNT]) do
+            SeekPositionStream(HCW_STREAM, HCW_OFFSETS[k]);
+            if not _StreamHCacheValidLine(ReadLine(HCW_STREAM)) then
+                CloseStream(HCW_STREAM);
+                HCW_STREAM := fail;
+                return false;
+            fi;
+        od;
+    fi;
+    return true;
 end;
 
 # Read+reconstruct one LEFT entry on demand (seek to its byte offset).  Mirrors
@@ -3359,6 +3500,37 @@ end;
 
 CloseHCacheWindow := function()
     if HCW_STREAM <> fail then CloseStream(HCW_STREAM); HCW_STREAM := fail; fi;
+end;
+
+# Probe a sample of windowed entries to verify every entry actually carries the
+# requested q-coverage.  Guards EPOCH-1 (non-resume) windowing against a
+# HETEROGENEOUS cache from a crashed mid-extend: ComputeCoverageTag UNIONs the
+# per-entry computed_q_ids, so the file's coverage header OVER-CLAIMS when a
+# partial extend left a short tail -- the header/coverage-tag check alone would
+# accept it and the windowed pair loop would silently undercount those entries.
+# Build and extend fill entries strictly in index order, so any shortfall is a
+# SUFFIX => the LAST entry is the definitive witness; we also sample the first
+# entry and an even spread for defense in depth against non-suffix corruption.
+# O(sample) seeks (~9 EvalStrings) -- negligible vs the full load it replaces.
+# Returns false on ANY probed entry missing a requested qid, so the caller falls
+# back to the self-healing full load (per-entry scan + EnsureHCacheComplete +
+# extend).  Requires the window to be OPEN (OpenHCacheWindow set HCW_*).
+WindowedCacheUniformlyCovered := function(q_groups)
+    local n, idxs, i, e, miss;
+    n := HCW_COUNT;
+    if n <= 0 then return true; fi;
+    idxs := Set([1, n]);
+    for i in [1..7] do
+        AddSet(idxs, Maximum(1, Minimum(n, QuoInt(i * n, 8))));
+    od;
+    for i in idxs do
+        e := GetHCacheEntry(i);
+        miss := QGroupsMissing(e.computed_q_ids, _UnsafeRepsOf(e), q_groups);
+        if miss = fail or Length(miss) > 0 then
+            return false;
+        fi;
+    od;
+    return true;
 end;
 
 SaveHCacheList := function(path, h_cache)
@@ -3443,7 +3615,8 @@ SaveHCacheList := function(path, h_cache)
     header_stream := OutputTextFile(tmp, false);
     WriteAll(header_stream, header);
     WriteAll(header_stream, Concatenation("# hcache_count: ",
-                                          String(mem_n), "\n"));
+                                          String(mem_n),
+                                          " ver=", HCACHE_BUILD_VER, "\n"));
     CloseStream(header_stream);
     AppendTo(tmp, "H_CACHE := ", h_cache, ";\n");
     Exec(Concatenation("mv -f -- '", tmp, "' '", path, "'"));
@@ -3539,10 +3712,17 @@ end;
 
 BuildHCacheStreaming := function(subs, amb, q_groups, path, label,
                                  ckpt_check, ckpt_quit)
+    # When the global STREAM_EXTEND_FROM = fail, compute each entry fresh
+    # (ComputeHCacheEntry).  When it is a <path>, read each OLD entry from that
+    # framed cache (in index order, O(1) memory) and ExtendHCacheEntry it to
+    # q_groups instead of recomputing -- so a multi-GB cache is extended without
+    # ever full-loading it (the extend full-load was a 40 GB+ balloon; this
+    # bounds it to one entry at a time).  A global avoids changing the 3
+    # fresh-build callers (which pass no extend arg).
     local n_expected, tag, header, bpath, ipath, ihdr, n_done, offs, write_pos,
           gstream, istream, hi, s, f, l1, l2, line, k, last_flush,
           last_flush_hi, last_hb, last_hb_count, disk_n, disk_tag, do_publish,
-          rnd, idxtmp, adopt_ok;
+          rnd, idxtmp, adopt_ok, extend_stream, ee, emiss;
     n_expected := Length(subs);
     tag := QIdsOfGroups(q_groups);
     if tag = fail then
@@ -3554,7 +3734,8 @@ BuildHCacheStreaming := function(subs, amb, q_groups, path, label,
     # build: every ComputeHCacheEntry below sets computed_q_ids :=
     # QIdsOfGroups(q_groups), so ComputeCoverageTag(entries) = this tag.
     header := Concatenation(header, "# hcache_framed: count=",
-                            String(n_expected), "\n");
+                            String(n_expected),
+                            " ver=", HCACHE_BUILD_VER, "\n");
     bpath := Concatenation(path, ".building.", BUILD_TOKEN);
     ipath := Concatenation(bpath, ".idx");
     ihdr := Concatenation("# hcache_building: ver=", HCACHE_BUILD_VER,
@@ -3653,6 +3834,18 @@ BuildHCacheStreaming := function(subs, amb, q_groups, path, label,
         istream := OutputTextFile(ipath, true);
         SetPrintFormattingStatus(istream, false);
     fi;
+    # Extend mode: open the OLD framed cache for sequential reads, positioned at
+    # entry n_done+1 (seek via the old .idx so a resume skips the prefix in O(1)).
+    extend_stream := fail;
+    if STREAM_EXTEND_FROM <> fail then
+        extend_stream := InputTextFile(STREAM_EXTEND_FROM);
+        if n_done = 0 then
+            ReadLine(extend_stream); ReadLine(extend_stream);   # skip 2 header lines
+        else
+            Read(Concatenation(STREAM_EXTEND_FROM, ".idx"));   # -> HCACHE_OFFSETS
+            SeekPositionStream(extend_stream, HCACHE_OFFSETS[n_done + 1]);
+        fi;
+    fi;
     last_hb := Runtime();
     last_hb_count := n_done;
     last_flush := Runtime();
@@ -3665,7 +3858,22 @@ BuildHCacheStreaming := function(subs, amb, q_groups, path, label,
             last_hb := Runtime();
             last_hb_count := hi;
         fi;
-        s := String(ComputeHCacheEntry(subs[hi], amb, q_groups));
+        if STREAM_EXTEND_FROM = fail then
+            s := String(ComputeHCacheEntry(subs[hi], amb, q_groups));
+        else
+            # Read the OLD entry hi (next line, in order) and extend it to
+            # q_groups -- same ExtendHCacheEntry the full-load path uses, so the
+            # result is identical, but only one entry is in memory at a time.
+            ee := EvalString(Chomp(ReadLine(extend_stream)));
+            NormalizeHCacheEntry(ee);
+            emiss := QGroupsMissing(ee.computed_q_ids, _UnsafeRepsOf(ee), q_groups);
+            if emiss = fail then
+                ExtendHCacheEntry(ee, amb, q_groups);
+            elif Length(emiss) > 0 then
+                ExtendHCacheEntry(ee, amb, emiss);
+            fi;
+            s := String(ee);
+        fi;
         WriteAll(gstream, s);
         WriteAll(gstream, "\n");
         WriteAll(istream, String(write_pos));
@@ -3702,6 +3910,7 @@ BuildHCacheStreaming := function(subs, amb, q_groups, path, label,
     od;
     CloseStream(gstream);
     CloseStream(istream);
+    if extend_stream <> fail then CloseStream(extend_stream); fi;
     if Length(offs) <> n_expected then
         Error("STREAM-BUILD (", label, "): wrote ", Length(offs),
               " entries but the source has ", n_expected,
@@ -3736,6 +3945,14 @@ BuildHCacheStreaming := function(subs, amb, q_groups, path, label,
         Exec(Concatenation("mv -f -- '", idxtmp, "' '", path, ".idx'"));
         Exec(Concatenation("mv -f -- '", bpath, "' '", path, "'"));
         RemoveFile(ipath);
+        # Verify the publish (Exec surfaces no return code): a silently-
+        # failed mv leaves the OLD cache at the canonical path -- for an
+        # EXTEND republish it has the SAME count, so count checks alone
+        # would window the coverage-short entries (silent undercount).
+        if ReadEntryCountFromFile(path) <> n_expected then
+            Error("STREAM-BUILD (", label, "): publish verification failed",
+                  " at ", path, " (mv failed silently?)");
+        fi;
         Print("  [", label, "] STREAM-BUILD published ", n_expected,
               " entries -> ", path, "\n");
     else
@@ -3744,6 +3961,7 @@ BuildHCacheStreaming := function(subs, amb, q_groups, path, label,
         Print("  [", label, "] STREAM-BUILD skip publish: on-disk cache is ",
               "complete with dominating coverage\n");
     fi;
+    STREAM_EXTEND_FROM := fail;   # never leak extend-mode into a later fresh build
     return n_expected;
 end;
 """
@@ -3771,6 +3989,11 @@ qstate := NewQTypeState();
 # otherwise trigger pairwise IG on 2-groups (catastrophically slow -> silent
 # OOM/crash).  Order-1024 IG is then done only when the LEFT truly reaches it.
 LEFT_ORDERS := Set(List(SUBGROUPS_LEFT_RAW, Size));
+if USE_LEFT_REALIZABLE = 1 then
+    LEFT_REALIZABLE := LeftRealizableQTypesIfCheap(SUBGROUPS_LEFT_RAW);
+else
+    LEFT_REALIZABLE := fail;
+fi;
 # Per-(d,t) Q-discovery: avoid the slow RequiredQGroups(MR) union.
 if RIGHT_TG_D > 0 then
     T_for_qg := TransitiveGroup(RIGHT_TG_D, RIGHT_TG_T);
@@ -3778,6 +4001,7 @@ if RIGHT_TG_D > 0 then
         if Size(K) = Size(T_for_qg) then continue; fi;
         if not ForAny(LEFT_ORDERS, o -> o mod (Size(T_for_qg)/Size(K)) = 0) then continue; fi;
         Q := T_for_qg/K;
+        if LEFT_REALIZABLE <> fail and not QTypeInRepList(LEFT_REALIZABLE, Q) then continue; fi;
         if QTypeIsNew(qstate, Q) then
             if IdGroupsAvailable(Size(Q)) then
                 Add(RIGHT_Q_GROUPS, SmallGroup(Size(Q), IdGroup(Q)[2]));
@@ -3792,6 +4016,7 @@ if SUBS_RIGHT_PATH <> "" then
         # LEFT-order bound (2026-05-31): see BATCH_DRIVER note. |Q| must divide
         # some |H_L| or Q cannot be a common quotient -- skip impossible types.
         if not ForAny(LEFT_ORDERS, o -> o mod Size(Q) = 0) then continue; fi;
+        if LEFT_REALIZABLE <> fail and not QTypeInRepList(LEFT_REALIZABLE, Q) then continue; fi;
         if QTypeIsNew(qstate, Q) then
             Add(RIGHT_Q_GROUPS, Q);
         fi;
@@ -3828,7 +4053,11 @@ else
     # the candidate quotient types some LEFT subgroup actually surjects onto, tested
     # exactly via GQuotients.  Count-neutral; the gate is a perf knob (small LEFT =
     # the rigid distinguished LEFTs where the scan is cheap and the win is large).
-    if QPRUNE_MAXSUBS > 0 and Length(SUBGROUPS_LEFT_RAW) <= QPRUNE_MAXSUBS
+    if LEFT_REALIZABLE <> fail then
+        # RIGHT_Q_GROUPS was already filtered to LEFT-realizable types during
+        # discovery, so it IS the prune result (count-identical to GQuotients).
+        LEFT_Q_GROUPS := RIGHT_Q_GROUPS;
+    elif QPRUNE_MAXSUBS > 0 and Length(SUBGROUPS_LEFT_RAW) <= QPRUNE_MAXSUBS
        and not ForAll(SUBGROUPS_LEFT_RAW, IsSolvableGroup) then
         LEFT_Q_GROUPS := Filtered(RIGHT_Q_GROUPS, Q ->
             ForAny(SUBGROUPS_LEFT_RAW, HL -> Length(GQuotients(HL, Q)) > 0));
@@ -5018,6 +5247,11 @@ TOTAL_FIX := resume_total_fix;
 TOTAL_CS_SUM := resume_total_cs;   # HARVEST: class_sum, carried across resume (see resume block)
 t0 := Runtime();
 n_left := Length(H_CACHE_L);
+# HOTFIX 2026-06-12: reset the checkpoint timer to EXCLUDE cache/setup load
+# (the LEFT H-cache build can be long on heavy standalone combos) so the
+# checkpoint interval/floor measure only useful pair-loop work, not setup.
+WORKER_START := Runtime();
+WORKER_START_WALL := NanosecondsSinceEpoch();
 for i in [i_resume_start..n_left] do
     H1data := ReconstructHData(H_CACHE_L[i], S_ML);
     if BURNSIDE_M2 = 1 then
@@ -5196,6 +5430,7 @@ STREAM_WINDOW_MIN := __STREAM_WINDOW_MIN__;  # BATCH: windowed pair loop at >= t
 MAX_PAIRS_PER_CKPT := __MAX_PAIRS_PER_CKPT__;
 CKPT_TIME_FLOOR_MS := __CKPT_TIME_FLOOR_MS__;
 CKPT_PAIR_GRAN     := __CKPT_PAIR_GRAN__;
+MAX_WORKSPACE_KB   := __MAX_WORKSPACE_KB__;   # 0 = disabled; else checkpoint-restart the epoch when GAP workspace >= this many KB
 N_PAIRS_EPOCH := 0;
 
 # Path to lifting_algorithm.g for _GoursatBuildFiberProduct.
@@ -5319,6 +5554,11 @@ qstate := NewQTypeState();
 # (and the lethal pairwise IsomorphismGroups in QTypeIsNew) when the shared LEFT
 # can't reach that order.  SUBGROUPS_LEFT_RAW is the same for every job here.
 LEFT_ORDERS := Set(List(SUBGROUPS_LEFT_RAW, Size));
+if USE_LEFT_REALIZABLE = 1 then
+    LEFT_REALIZABLE := LeftRealizableQTypesIfCheap(SUBGROUPS_LEFT_RAW);
+else
+    LEFT_REALIZABLE := fail;
+fi;
 # Per-job specific Q-discovery: for TG-source jobs walk just TG(d, t); for
 # subs_right-source jobs walk the cached SUBS_RIGHT path.  Avoids the
 # RequiredQGroups(MR) union which iterates all NrTransitiveGroups(MR) TG's
@@ -5336,6 +5576,7 @@ for job_idx in [1..Length(JOBS)] do
                 if Size(K) = Size(T_for_qg) then continue; fi;
                 if not ForAny(LEFT_ORDERS, o -> o mod (Size(T_for_qg)/Size(K)) = 0) then continue; fi;
                 Q := T_for_qg/K;
+                if LEFT_REALIZABLE <> fail and not QTypeInRepList(LEFT_REALIZABLE, Q) then continue; fi;
                 if QTypeIsNew(qstate, Q) then
                     if IdGroupsAvailable(Size(Q)) then
                         Add(RIGHT_Q_GROUPS, SmallGroup(Size(Q), IdGroup(Q)[2]));
@@ -5359,6 +5600,7 @@ for job_idx in [1..Length(JOBS)] do
             # extend/QTypeCovered reconciliation then ran IsomorphismGroups on
             # half-million-order groups that can never match.  Filter them here.
             if not ForAny(LEFT_ORDERS, o -> o mod Size(Q) = 0) then continue; fi;
+            if LEFT_REALIZABLE <> fail and not QTypeInRepList(LEFT_REALIZABLE, Q) then continue; fi;
             if QTypeIsNew(qstate, Q) then
                 Add(RIGHT_Q_GROUPS, Q);
             fi;
@@ -5392,7 +5634,11 @@ else
     # LEFT-realizability Q-prune (see QPRUNE_MAXSUBS in _SHARED_HELPERS): keep only
     # the candidate quotient types some LEFT subgroup actually surjects onto (exact,
     # via GQuotients).  Count-neutral; the gate is a perf knob for small LEFT lists.
-    if QPRUNE_MAXSUBS > 0 and Length(SUBGROUPS_LEFT_RAW) <= QPRUNE_MAXSUBS
+    if LEFT_REALIZABLE <> fail then
+        # RIGHT_Q_GROUPS was already filtered to LEFT-realizable types during
+        # discovery, so it IS the prune result (count-identical to GQuotients).
+        LEFT_Q_GROUPS := RIGHT_Q_GROUPS;
+    elif QPRUNE_MAXSUBS > 0 and Length(SUBGROUPS_LEFT_RAW) <= QPRUNE_MAXSUBS
        and not ForAll(SUBGROUPS_LEFT_RAW, IsSolvableGroup) then
         LEFT_Q_GROUPS := Filtered(RIGHT_Q_GROUPS, Q ->
             ForAny(SUBGROUPS_LEFT_RAW, HL -> Length(GQuotients(HL, Q)) > 0));
@@ -5406,13 +5652,24 @@ else
 fi;
 
 H_CACHE := fail;
-# Windowed LEFT (framed cache + pure pair-loop resume): a prior epoch already
-# finished build+extend+EnsureHCacheComplete and saved a COMPLETE framed cache,
-# so skip the full read / coverage-scan / extend and read each LEFT entry on
-# demand in the pair loop (GetHCacheEntry).  LEFT_Q_GROUPS + SUBGROUPS_LEFT_RAW
-# above are still computed (cheap; needed for RIGHT extend + pairing).
+# Windowed LEFT (framed cache): skip the full read / coverage-scan / extend and
+# read each LEFT entry on demand in the pair loop (GetHCacheEntry).  Two cases:
+#   (a) a pure pair-loop RESUME -- a prior epoch of THIS invocation already
+#       finished build+extend+EnsureHCacheComplete and published a COMPLETE
+#       framed cache (in-process invariant), as before; OR
+#   (b) the FIRST epoch (no RESUME_STATE) REUSING an already-built complete
+#       cache whose entry count >= STREAM_WINDOW_MIN.  Epoch 1 used to full-load
+#       the entire cache into RAM (the n=18 C2/D8 monsters are ~3 GB on disk ->
+#       tens of GB live) before any pairs ran; windowing avoids that balloon.
+# Small caches stay on the cheap full-load path (gated by STREAM_WINDOW_MIN), so
+# the overwhelming majority of combos are byte-identical to before.  Case (b) is
+# made safe against a crashed-mid-extend HETEROGENEOUS cache by the per-entry
+# probe below (the union coverage header can over-claim; see
+# WindowedCacheUniformlyCovered).  LEFT_Q_GROUPS + SUBGROUPS_LEFT_RAW above are
+# still computed (cheap; needed for RIGHT extend + pairing).
 USE_WINDOWED_LEFT := false;
-if IsBound(RESUME_STATE) and not IsBound(RESUME_BUILD) and not IsBound(RESUME_EXTEND)
+if not IsBound(RESUME_BUILD) and not IsBound(RESUME_EXTEND)
+   and (IsBound(RESUME_STATE) or Length(SUBGROUPS_LEFT_RAW) >= STREAM_WINDOW_MIN)
    and CACHE_LEFT_PATH <> "" and IsFramedCacheFile(CACHE_LEFT_PATH)
    and OpenHCacheWindow(CACHE_LEFT_PATH) then
     # (2026-06-09 hardening) The windowed fast path trusts that the on-disk
@@ -5436,17 +5693,115 @@ if IsBound(RESUME_STATE) and not IsBound(RESUME_BUILD) and not IsBound(RESUME_EX
             wleft_ok := false;
         fi;
     fi;
+    # Per-entry completeness probe.  The coverage-tag check above trusts the
+    # file header, which UNIONs per-entry coverage and so over-claims for a
+    # crashed-mid-extend cache (extended prefix + short tail).  Probe a
+    # sample of real entries (incl. the last) and reject on any shortfall
+    # -> full-load self-heal.  Runs on pair-loop RESUME too (2026-07-02):
+    # resume epochs are separate processes and the cache file is shared
+    # across workers between epochs, so the "in-process invariant" the old
+    # resume-skip relied on was never actually process-local.  ~9 seeks.
+    if wleft_ok then
+        wleft_ok := WindowedCacheUniformlyCovered(LEFT_Q_GROUPS);
+    fi;
     if wleft_ok then
         N_LEFT := HCW_COUNT;
         USE_WINDOWED_LEFT := true;
         H1DATA_LIST := fail;
-        Print("[t+", Runtime() - batch_t0, "ms] WINDOWED LEFT: ", N_LEFT,
-              " entries (framed cache, pair-loop resume; reading on demand)\n");
+        H_CACHE_L := fail;
+        if IsBound(RESUME_STATE) then
+            Print("[t+", Runtime() - batch_t0, "ms] WINDOWED LEFT: ", N_LEFT,
+                  " entries (framed cache, pair-loop resume; reading on demand)\n");
+        else
+            Print("[t+", Runtime() - batch_t0, "ms] WINDOWED LEFT: ", N_LEFT,
+                  " entries (framed cache, epoch-1 reuse; reading on demand)\n");
+        fi;
     else
         CloseHCacheWindow();
         Print("[t+", Runtime() - batch_t0, "ms] WINDOWED LEFT REJECTED: count ",
               HCW_COUNT, " vs ", Length(SUBGROUPS_LEFT_RAW),
-              " subgroups, or coverage tag short -- falling back to full load\n");
+              " subgroups, coverage tag short, or non-uniform tail -- full load\n");
+    fi;
+fi;
+# ---- Streaming LEFT-cache EXTEND (memory-bounded) --------------------------
+# The epoch-1 gate above windows a COMPLETE framed cache.  If instead the cache
+# needs MORE coverage (or a prior extend was checkpointed: RESUME_EXTEND),
+# extend it ONE ENTRY AT A TIME via BuildHCacheStreaming(STREAM_EXTEND_FROM=...)
+# -- reading the old framed cache on demand and republishing -- instead of
+# full-loading the whole multi-GB cache to extend in place (THE 40 GB+ balloon).
+# Then window the freshly-published complete cache.  Falls through to the legacy
+# full-load extend below when not framed / count-mismatched / streaming off.
+if not USE_WINDOWED_LEFT and not IsBound(RESUME_BUILD)
+   and STREAM_HCACHE_BUILD = 1 and FRAMED_CACHE = 1
+   and CACHE_LEFT_PATH <> "" and IsFramedCacheFile(CACHE_LEFT_PATH)
+   and ReadEntryCountFromFile(CACHE_LEFT_PATH) = Length(SUBGROUPS_LEFT_RAW) then
+    do_stream_extend := IsBound(RESUME_EXTEND);
+    if not do_stream_extend and OpenHCacheWindow(CACHE_LEFT_PATH)
+       and HCW_COUNT = Length(SUBGROUPS_LEFT_RAW) then
+        se_tag := ReadCoverageTagFromFile(CACHE_LEFT_PATH);
+        if se_tag = fail or se_tag = "missing" or se_tag = "unknown" then
+            do_stream_extend := false;   # full / unknown coverage -> legacy path
+        elif not IsSubset(se_tag, QIdsOfGroups(LEFT_Q_GROUPS)) then
+            do_stream_extend := true;    # header coverage short
+        elif not WindowedCacheUniformlyCovered(LEFT_Q_GROUPS) then
+            do_stream_extend := true;    # header full but a tail entry is short
+        else
+            do_stream_extend := false;   # complete + uniform -> no extend needed
+        fi;
+        CloseHCacheWindow();
+    fi;
+    if do_stream_extend then
+        Print("[t+", Runtime() - batch_t0, "ms] STREAMING-EXTEND LEFT cache (",
+              Length(SUBGROUPS_LEFT_RAW), " entries, one at a time)...\n");
+        STREAM_EXTEND_FROM := CACHE_LEFT_PATH;
+        BuildHCacheStreaming(SUBGROUPS_LEFT_RAW, W_ML, LEFT_Q_GROUPS,
+            CACHE_LEFT_PATH, "BATCH-LEFT-EXTEND",
+            function()
+                return STATE_FILE <> "" and CHECKPOINT_INTERVAL_MS > 0
+                   and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL,
+                              1000000) >= CHECKPOINT_INTERVAL_MS;
+            end,
+            function(hi_done)
+                local tmp;
+                tmp := Concatenation(STATE_FILE, ".tmp");
+                PrintTo(tmp, "RESUME_EXTEND := rec( streaming := true, done_until := ",
+                        hi_done, " );\n");
+                Exec(Concatenation("mv -f -- '", tmp, "' '", STATE_FILE, "'"));
+                Print("CHECKPOINT_PAUSE_EXTEND streaming done_until=", hi_done,
+                      "/", Length(SUBGROUPS_LEFT_RAW),
+                      " elapsed_ms=", Runtime() - WORKER_START, "\n");
+                LogTo();
+                QuitGap();
+            end);
+        STREAM_EXTEND_FROM := fail;
+        # Extend completed (no checkpoint) -> clear the RESUME_EXTEND signal and
+        # window the now-complete published cache (skips the full-load below).
+        if IsBound(RESUME_EXTEND) and STATE_FILE <> "" and IsExistingFile(STATE_FILE)
+           and not IsBound(RESUME_STATE) and not IsBound(RESUME_BUILD) then
+            RemoveFile(STATE_FILE);
+        fi;
+        # Re-verify coverage after the republish (2026-07-02): the publish
+        # `mv`s can fail silently (Exec rc unchecked), leaving the OLD,
+        # coverage-short cache at the canonical path with the SAME entry
+        # count -- a count check alone would window it and the pair loop
+        # would silently undercount.  On rejection fall through to the full
+        # load below, whose per-entry scan + extend self-heal.
+        if OpenHCacheWindow(CACHE_LEFT_PATH) then
+            if HCW_COUNT = Length(SUBGROUPS_LEFT_RAW)
+               and WindowedCacheUniformlyCovered(LEFT_Q_GROUPS) then
+                N_LEFT := HCW_COUNT;
+                USE_WINDOWED_LEFT := true;
+                H1DATA_LIST := fail;
+                H_CACHE_L := fail;
+                Print("[t+", Runtime() - batch_t0, "ms] WINDOWED LEFT: ", N_LEFT,
+                      " entries (framed cache, post-streaming-extend; reading on demand)\n");
+            else
+                CloseHCacheWindow();
+                Print("[t+", Runtime() - batch_t0, "ms] WINDOWED LEFT REJECTED ",
+                      "post-extend: count/coverage short (publish failed?) ",
+                      "-- full load\n");
+            fi;
+        fi;
     fi;
 fi;
 if not USE_WINDOWED_LEFT then
@@ -5601,7 +5956,11 @@ if H_CACHE = fail or RESUME_BUILD_NEXT_HI > 0 then
             # to today's behavior where the current code is fine).
             if Length(SUBGROUPS_LEFT_RAW) >= STREAM_WINDOW_MIN
                and OpenHCacheWindow(CACHE_LEFT_PATH) then
-                if HCW_COUNT = Length(SUBGROUPS_LEFT_RAW) then
+                # Coverage re-probe (2026-07-02): if the publish `mv` failed
+                # silently, the canonical path can still hold an OLD
+                # same-count cache -- reject and full-load (self-heals).
+                if HCW_COUNT = Length(SUBGROUPS_LEFT_RAW)
+                   and WindowedCacheUniformlyCovered(LEFT_Q_GROUPS) then
                     N_LEFT := HCW_COUNT;
                     USE_WINDOWED_LEFT := true;
                     H1DATA_LIST := fail;
@@ -6658,6 +7017,13 @@ _LOOP_BATCH = r"""
               N_LEFT, " x ", Length(H2DATA),
               " = ", n_pairs_total, " pairs\n");
     fi;
+    # HOTFIX 2026-06-12: reset the checkpoint timer to EXCLUDE cache/setup load
+    # (the RIGHT H-cache rebuild can take 60-107 min).  The checkpoint interval
+    # and floor must measure only useful pair-loop work; otherwise a sub-second
+    # pair loop inherits ~100 min of "elapsed" from setup, trips the 2h wall
+    # backstop immediately, and restarts -> redoing the whole rebuild.
+    WORKER_START := Runtime();
+    WORKER_START_WALL := NanosecondsSinceEpoch();
     # Optimization (4) 2026-04-28: precompute shifted RIGHT once per j outside
     # the i loop.  For burnside_m2 mode, H2DATA[1] gets overwritten per-i so
     # we must compute per-pair (only 1 entry, so cheap).
@@ -6758,7 +7124,10 @@ _LOOP_BATCH = r"""
                      or (CHECKPOINT_INTERVAL_MS > 0 and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CHECKPOINT_INTERVAL_MS)
                      or (CKPT_TIME_FLOOR_MS > 0 and CKPT_PAIR_GRAN > 0 and N_PAIRS_EPOCH > 0
                          and N_PAIRS_EPOCH mod CKPT_PAIR_GRAN = 0
-                         and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CKPT_TIME_FLOOR_MS) )
+                         and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CKPT_TIME_FLOOR_MS)
+                     or (MAX_WORKSPACE_KB > 0 and CKPT_PAIR_GRAN > 0 and N_PAIRS_EPOCH > 0
+                         and N_PAIRS_EPOCH mod CKPT_PAIR_GRAN = 0
+                         and CurrentWorkspaceKB() >= MAX_WORKSPACE_KB) )
                and (j < Length(H2DATA) or i < N_LEFT) then
                 next_i := i;
                 next_j := j + 1;
@@ -6879,7 +7248,8 @@ _LOOP_BATCH = r"""
     if STATE_FILE <> ""
        and ( (MAX_PAIRS_PER_CKPT > 0 and N_PAIRS_EPOCH >= MAX_PAIRS_PER_CKPT)
              or (CHECKPOINT_INTERVAL_MS > 0 and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CHECKPOINT_INTERVAL_MS)
-             or (CKPT_TIME_FLOOR_MS > 0 and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CKPT_TIME_FLOOR_MS) )
+             or (CKPT_TIME_FLOOR_MS > 0 and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CKPT_TIME_FLOOR_MS)
+             or (MAX_WORKSPACE_KB > 0 and CurrentWorkspaceKB() >= MAX_WORKSPACE_KB) )
        and job_idx < Length(JOBS) then
         tmp := Concatenation(STATE_FILE, ".tmp");
         PrintTo(tmp, "RESUME_STATE := rec( job_idx := ", job_idx + 1, " );\n");
@@ -6939,6 +7309,7 @@ STREAM_WINDOW_MIN := __STREAM_WINDOW_MIN__;  # BATCH: windowed pair loop at >= t
 MAX_PAIRS_PER_CKPT := __MAX_PAIRS_PER_CKPT__;
 CKPT_TIME_FLOOR_MS := __CKPT_TIME_FLOOR_MS__;
 CKPT_PAIR_GRAN     := __CKPT_PAIR_GRAN__;
+MAX_WORKSPACE_KB   := __MAX_WORKSPACE_KB__;   # 0 = disabled; else checkpoint-restart the epoch when GAP workspace >= this many KB
 N_PAIRS_EPOCH := 0;
 
 """
@@ -7068,6 +7439,11 @@ for group_idx in [RESUME_GROUP_IDX..Length(GROUPS)] do
     # quotients (and the lethal pairwise IsomorphismGroups in QTypeIsNew) when the
     # shared LEFT can't reach that order.
     LEFT_ORDERS := Set(List(SUBGROUPS_LEFT_RAW, Size));
+    if USE_LEFT_REALIZABLE = 1 then
+        LEFT_REALIZABLE := LeftRealizableQTypesIfCheap(SUBGROUPS_LEFT_RAW);
+    else
+        LEFT_REALIZABLE := fail;
+    fi;
     # Per-job specific Q-discovery: see BATCH_DRIVER comment.
     seen_tg_keys := Set([]);
     seen_subs_paths := Set([]);
@@ -7083,6 +7459,7 @@ for group_idx in [RESUME_GROUP_IDX..Length(GROUPS)] do
                     if Size(K) = Size(T_for_qg) then continue; fi;
                     if not ForAny(LEFT_ORDERS, o -> o mod (Size(T_for_qg)/Size(K)) = 0) then continue; fi;
                     Q := T_for_qg/K;
+                    if LEFT_REALIZABLE <> fail and not QTypeInRepList(LEFT_REALIZABLE, Q) then continue; fi;
                     if QTypeIsNew(qstate, Q) then
                         if IdGroupsAvailable(Size(Q)) then
                             Add(RIGHT_Q_GROUPS, SmallGroup(Size(Q), IdGroup(Q)[2]));
@@ -7100,6 +7477,7 @@ for group_idx in [RESUME_GROUP_IDX..Length(GROUPS)] do
                     GROUP.jobs[hi].subs_right, GROUP.jobs[hi].cache_right) do
                 # LEFT-order bound (2026-05-31): see BATCH_DRIVER note.
                 if not ForAny(LEFT_ORDERS, o -> o mod Size(Q) = 0) then continue; fi;
+                if LEFT_REALIZABLE <> fail and not QTypeInRepList(LEFT_REALIZABLE, Q) then continue; fi;
                 if QTypeIsNew(qstate, Q) then
                     Add(RIGHT_Q_GROUPS, Q);
                 fi;
@@ -7133,7 +7511,11 @@ for group_idx in [RESUME_GROUP_IDX..Length(GROUPS)] do
         # LEFT-realizability Q-prune (see QPRUNE_MAXSUBS in _SHARED_HELPERS): keep
         # only the candidate quotient types some LEFT subgroup actually surjects
         # onto (exact, via GQuotients).  Count-neutral; gate is a small-LEFT perf knob.
-        if QPRUNE_MAXSUBS > 0 and Length(SUBGROUPS_LEFT_RAW) <= QPRUNE_MAXSUBS
+        if LEFT_REALIZABLE <> fail then
+            # RIGHT_Q_GROUPS was already filtered to LEFT-realizable types during
+            # discovery, so it IS the prune result (count-identical to GQuotients).
+            LEFT_Q_GROUPS := RIGHT_Q_GROUPS;
+        elif QPRUNE_MAXSUBS > 0 and Length(SUBGROUPS_LEFT_RAW) <= QPRUNE_MAXSUBS
        and not ForAll(SUBGROUPS_LEFT_RAW, IsSolvableGroup) then
             LEFT_Q_GROUPS := Filtered(RIGHT_Q_GROUPS, Q ->
                 ForAny(SUBGROUPS_LEFT_RAW, HL -> Length(GQuotients(HL, Q)) > 0));
@@ -7521,6 +7903,11 @@ _LOOP_SUPER = r"""
         Print("    [t+", Runtime() - job_t0, "ms] starting H1xH2 loop: ",
               N_LEFT, " x ", Length(H2DATA),
               " = ", n_pairs_total, " pairs\n");
+        # HOTFIX 2026-06-12: reset checkpoint timer to EXCLUDE cache/setup load
+        # (RIGHT H-cache rebuild can take 60-107 min) so the interval/floor
+        # measure only useful pair-loop work, not the one-time setup.
+        WORKER_START := Runtime();
+        WORKER_START_WALL := NanosecondsSinceEpoch();
         # Optimization (4) 2026-04-28: precompute shifted RIGHT once per j.
         if BURNSIDE_M2 = 0 then
             for H2data_j in H2DATA do EnsureShiftedHData(H2data_j); od;
@@ -7607,7 +7994,10 @@ _LOOP_SUPER = r"""
                          or (CHECKPOINT_INTERVAL_MS > 0 and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CHECKPOINT_INTERVAL_MS)
                          or (CKPT_TIME_FLOOR_MS > 0 and CKPT_PAIR_GRAN > 0 and N_PAIRS_EPOCH > 0
                              and N_PAIRS_EPOCH mod CKPT_PAIR_GRAN = 0
-                             and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CKPT_TIME_FLOOR_MS) )
+                             and QuoInt(NanosecondsSinceEpoch() - WORKER_START_WALL, 1000000) >= CKPT_TIME_FLOOR_MS)
+                         or (MAX_WORKSPACE_KB > 0 and CKPT_PAIR_GRAN > 0 and N_PAIRS_EPOCH > 0
+                             and N_PAIRS_EPOCH mod CKPT_PAIR_GRAN = 0
+                             and CurrentWorkspaceKB() >= MAX_WORKSPACE_KB) )
                    and (j < Length(H2DATA) or i < N_LEFT) then
                     next_i := i;
                     next_j := j + 1;
@@ -7769,6 +8159,36 @@ _CP_MARKER_RE = re.compile(
     rb"# cp ni=(\d+) nj=(\d+) orb=(\d+) fix=(\d+) cs=(\d+)\n")
 
 
+def _gens_tail_with(gens_path, has_needle, init_window=1 << 22):
+    """Read a growing tail window of `gens_path` from EOF (x4 each step) until
+    `has_needle(buf)` is True or the whole file has been read.  Returns
+    (buf, base) where buf == file bytes from offset `base` to EOF.
+
+    The checkpoint marker a resume needs is the LAST one, which sits near the end
+    of the gens file (it is followed only by the generators of pairs computed
+    since that checkpoint).  Reading just the tail bounds memory to
+    O(distance-from-EOF-to-last-marker) instead of O(filesize): a mega-combo's
+    multi-GB gens file is no longer slurped whole.  This was a hard OOM -- a
+    6.6 GB job1_gens.g (the n=22 [4,3]^4 D8^4 monster, 32.8M classes) killed
+    _prepare_gens_resume with MemoryError on `read_bytes()`, wedging the combo so
+    it could never resume.  Correctness: when the window first grows to include
+    the last marker, base <= marker_start, so the marker line is fully present;
+    while the window is smaller, the buffer is pure post-checkpoint generators
+    (no marker) and we expand.  Identical (marker, truncation) to a full read."""
+    size = gens_path.stat().st_size
+    if size == 0:
+        return b"", 0
+    window = min(size, init_window)
+    with gens_path.open("rb") as f:
+        while True:
+            base = size - window
+            f.seek(base)
+            buf = f.read(window)
+            if base == 0 or has_needle(buf):
+                return buf, base
+            window = min(size, window * 4)
+
+
 # --- Streaming H-cache build (PRED_STREAM_HCACHE_BUILD) ---------------------
 # DEFAULT ON since 2026-06-09 (gates 1-2 + BATCH e2e green; flipped together
 # with the PRED_FRAMED_CACHE / PRED_LAZY_LEFT_RECON defaults per the
@@ -7882,8 +8302,8 @@ def _prepare_gens_resume(state_g, work_root, n_jobs, state_var="RESUME_STATE"):
         state_g.write_text(f"{state_var} := rec( job_idx := {job_idx} );\n",
                            encoding="utf-8")
         return
-    data = gens.read_bytes()
-    matches = list(_CP_MARKER_RE.finditer(data))
+    buf, toff = _gens_tail_with(gens, lambda b: _CP_MARKER_RE.search(b) is not None)
+    matches = list(_CP_MARKER_RE.finditer(buf))
     if not matches:
         with gens.open("r+b") as f:
             f.truncate(0)
@@ -7892,7 +8312,7 @@ def _prepare_gens_resume(state_g, work_root, n_jobs, state_var="RESUME_STATE"):
         return
     last = matches[-1]
     with gens.open("r+b") as f:
-        f.truncate(last.end())
+        f.truncate(toff + last.end())
     ni, nj, orb, fix, cs = (int(last.group(k)) for k in range(1, 6))
     state_g.write_text(
         f"{state_var} := rec( job_idx := {job_idx}, pair_i := {ni}, "
@@ -7925,8 +8345,8 @@ def _prepare_super_gens_resume(state_g, work_root):
     if not gens.exists():
         state_g.write_text(base + " );\n", encoding="utf-8")
         return
-    data = gens.read_bytes()
-    matches = list(_CP_MARKER_RE.finditer(data))
+    buf, toff = _gens_tail_with(gens, lambda b: _CP_MARKER_RE.search(b) is not None)
+    matches = list(_CP_MARKER_RE.finditer(buf))
     if not matches:
         with gens.open("r+b") as f:
             f.truncate(0)
@@ -7934,7 +8354,7 @@ def _prepare_super_gens_resume(state_g, work_root):
         return
     last = matches[-1]
     with gens.open("r+b") as f:
-        f.truncate(last.end())
+        f.truncate(toff + last.end())
     ni, nj, orb, fix, cs = (int(last.group(k)) for k in range(1, 6))
     state_g.write_text(
         base + f", pair_i := {ni}, pair_j := {nj}, total_orb := {orb}, "
@@ -8086,6 +8506,8 @@ def predict_super_batch(groups, force=False, timeout=10800):
                  str(int(os.environ.get("PRED_CKPT_TIME_FLOOR_MS", "1800000"))))
         .replace("__CKPT_PAIR_GRAN__",
                  str(int(os.environ.get("PRED_CKPT_PAIR_GRAN", "5000"))))
+        .replace("__MAX_WORKSPACE_KB__",
+                 str(int(round(float(os.environ.get("PRED_MAX_WORKSPACE_GB", "30")) * 1048576))))
         .replace("__FRAMED_CACHE__",
                  "0" if os.environ.get("PRED_FRAMED_CACHE") == "0" else "1")
         .replace("__STREAM_HCACHE_BUILD__", "1" if _stream_hcache_enabled() else "0")
@@ -8312,6 +8734,8 @@ def predict_batch(jobs, force=False, timeout=7200):
                  str(int(os.environ.get("PRED_CKPT_TIME_FLOOR_MS", "1800000"))))
         .replace("__CKPT_PAIR_GRAN__",
                  str(int(os.environ.get("PRED_CKPT_PAIR_GRAN", "5000"))))
+        .replace("__MAX_WORKSPACE_KB__",
+                 str(int(round(float(os.environ.get("PRED_MAX_WORKSPACE_GB", "30")) * 1048576))))
         .replace("__FRAMED_CACHE__",
                  "0" if os.environ.get("PRED_FRAMED_CACHE") == "0" else "1")
         .replace("__STREAM_HCACHE_BUILD__", "1" if _stream_hcache_enabled() else "0")
@@ -8463,8 +8887,17 @@ def _write_legacy_format(output_path, combo, raw_gens_lines, deduped_count,
     return len(joined_lines)
 
 
-def predict(combo, mode="auto", emit_generators=False, output_path=None,
-            force=False, timeout=3600, extend_only=False):
+def _predict_gap_driver(combo, mode="auto", emit_generators=False,
+                        output_path=None, force=False, timeout=3600,
+                        extend_only=False):
+    """LEGACY single-combo GAP driver.  Retained ONLY for --extend-only
+    (cache preflight; never enters the pair loop) and the PRED_COMBO_LEGACY=1
+    escape hatch.  Its pair-loop crash-resume has a known window (state.g is
+    durably updated every pair while gens+markers sit in a buffered stream,
+    so a hard kill silently drops -- or, in the reverse window, duplicates --
+    generator lines on resume).  predict() routes everything else through
+    the BATCH driver, whose gens-file-as-source-of-truth resume is
+    crash-consistent."""
     if isinstance(combo, str):
         combo = parse_combo_str(combo)
     target_n = sum(d for d, _ in combo)
@@ -8547,14 +8980,15 @@ def predict(combo, mode="auto", emit_generators=False, output_path=None,
             # Truncate fps.g to the byte position right after the last "#
             # checkpoint" marker line.  This guarantees fps.g ends at a clean
             # pair boundary (no half-emitted pair from a crash).
-            data = gen_path.read_bytes()
-            last_marker = data.rfind(b"# checkpoint ")
+            buf, toff = _gens_tail_with(gen_path,
+                                        lambda b: b.rfind(b"# checkpoint ") >= 0)
+            last_marker = buf.rfind(b"# checkpoint ")
             if last_marker >= 0:
                 # Find end of that line (the \n after the marker).
-                end_of_marker_line = data.find(b"\n", last_marker)
+                end_of_marker_line = buf.find(b"\n", last_marker)
                 if end_of_marker_line >= 0:
-                    truncate_to = end_of_marker_line + 1
-                    if truncate_to < len(data):
+                    truncate_to = toff + end_of_marker_line + 1
+                    if truncate_to < gen_path.stat().st_size:
                         with gen_path.open("r+b") as f:
                             f.truncate(truncate_to)
             # If no marker found, fall through to fresh-start truncation below.
@@ -8717,6 +9151,106 @@ def predict(combo, mode="auto", emit_generators=False, output_path=None,
         out["output_path"] = str(output_path)
     result_path.write_text(json.dumps(out, indent=2))
     return out
+
+
+def _count_generator_lines(path):
+    """Count logical generator lines ('['-starters, backslash-continuation
+    aware) in a composed combo .g file.  Mirrors runner/combos.py's
+    completeness counting without importing the runner package."""
+    n = 0
+    prev_continued = False
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.rstrip("\n").rstrip("\r")
+            if not prev_continued and line.startswith("["):
+                n += 1
+            prev_continued = line.endswith("\\")
+    return n
+
+
+def predict(combo, mode="auto", emit_generators=False, output_path=None,
+            force=False, timeout=3600, extend_only=False):
+    """Single-combo entry point.  Since 2026-07-02 this is a thin wrapper
+    over predict_batch (a 1-job batch): the single-combo GAP driver's
+    checkpoint design had a crash-resume window that silently dropped or
+    duplicated emitted generator lines (see _predict_gap_driver), and the
+    driver also lacked the BATCH path's streamed gens / windowed LEFT /
+    lazy-recon / memory-cap machinery (the entry-point divergence that made
+    the same pair loop cost 0.37GB via batch vs 9.5GB via --combo).  One
+    driver fewer to keep in sync.
+
+    --extend-only still uses the legacy driver (it exits before the pair
+    loop, where the crash window lives).  PRED_COMBO_LEGACY=1 forces the
+    old driver for A/B comparison."""
+    if isinstance(combo, str):
+        combo = parse_combo_str(combo)
+    if extend_only or os.environ.get("PRED_COMBO_LEGACY") == "1":
+        return _predict_gap_driver(combo, mode=mode,
+                                   emit_generators=emit_generators,
+                                   output_path=output_path, force=force,
+                                   timeout=timeout, extend_only=extend_only)
+    try:
+        mode = resolve_strategy(combo, mode)
+    except ValueError as e:
+        return {"error": str(e)}
+    if mode == "unsupported":
+        return {"error": "no 2-factor mode applicable to this combo"}
+
+    target_str = combo_filename(combo)
+    work = TMP / target_str
+    work.mkdir(parents=True, exist_ok=True)
+    result_path = work / "result.json"
+    if (result_path.exists() and not force and not emit_generators
+            and output_path is None):
+        return json.loads(result_path.read_text())
+
+    # The batch driver always composes the legacy combo file itself; give it
+    # a work-local path when the caller didn't ask for one.  Comment lines
+    # in the composed file are skipped by every generator-list consumer
+    # (the wreath two-step's --candidates-from, parse_combo_file, ...), so
+    # the composed file doubles as the "generators_file".
+    out_path = Path(output_path) if output_path is not None else (work / "out.g")
+    try:
+        results = predict_batch(
+            [{"combo": combo, "mode": mode, "output_path": str(out_path)}],
+            force=force, timeout=timeout)
+    except ValueError as e:
+        return {"error": str(e)}
+    if not results:
+        return {"error": "empty batch result"}
+    r = dict(results[0])
+    if "error" in r:
+        return r
+    try:
+        inputs = resolve_inputs(combo, mode)
+        r["left_combo"] = combo_filename(inputs["left_combo"])
+        r["right"] = (f"TG({inputs['right_tg'][0]},{inputs['right_tg'][1]})"
+                      if inputs["right_tg"]
+                      else combo_filename(inputs["right_combo"]))
+        r["m_left"] = inputs["m_left"]
+        r["m_right"] = inputs["m_right"]
+    except (ValueError, KeyError):
+        pass
+    # Composed-output integrity check: the body must carry exactly the
+    # predicted number of generator lines.  This is the loud replacement for
+    # the old warning_count_mismatch, which no caller consumed.
+    if not out_path.exists():
+        return {"error": f"batch job reported success but no output at {out_path}",
+                **{k: v for k, v in r.items() if k != "output_path"}}
+    n_body = _count_generator_lines(out_path)
+    if r.get("predicted") is not None and n_body != r["predicted"]:
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        return {"error": (f"composed output has {n_body} generator lines but "
+                          f"predicted={r['predicted']} (truncated emit; "
+                          f"output removed)"),
+                "combo": r.get("combo"), "mode": r.get("mode")}
+    if emit_generators or output_path is not None:
+        r["generators_file"] = str(out_path)
+    result_path.write_text(json.dumps(r, indent=2))
+    return r
 
 
 def main():

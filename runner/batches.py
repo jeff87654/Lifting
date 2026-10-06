@@ -43,7 +43,10 @@ from runner.predictors import (
     TASK_KIND_C2,
     TASK_KIND_C2_FACTOR_BATCH,
     TASK_KIND_C2_GLUE_BATCH,
+    TASK_KIND_C2_GLUE2_BATCH,
+    TASK_KIND_C2_GLUE2_SHARDED,
     TASK_KIND_ELEMAB,
+    TASK_KIND_IDENTITY_BATCH,
     TASK_KIND_SUPER_BATCH,
     TASK_KIND_WREATH,
     TASK_KIND_WREATH_VIA_2F,
@@ -117,6 +120,11 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
     elemab_combos = []     # pure (d,t)^k with (d,t) elementary abelian — run_b_elemab_path.py
     b_power_combos = []    # pure (d,t)^k with (d,t) in B_POWER_TG — run_b_power_path.py
     c2_glue_combos = []    # exactly one (2,1) block — run_c2_glue_path.py (no LEFT H-cache)
+    c2_glue2_combos = []   # exactly two (2,1) blocks — run_c2_glue2_path.py (no LEFT H-cache)
+    c3_glue_count = 0      # one degree-3 block, 3-coprime LEFT — rides the
+                           # c2_glue chunks (same driver picks the RIGHT)
+    identity_combos = []   # id_product/id_absorb/id_transfer —
+                           # run_identity_path.py (pure Python, no GAP)
     wreath_combos = []
     wreath_via_2f_combos = []
 
@@ -150,8 +158,20 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
             if rt == "elemab_fast":
                 elemab_combos.append((combo, output_path, partition))
                 continue
+            if rt in ("id_product", "id_absorb", "id_transfer"):
+                identity_combos.append((combo, output_path, partition))
+                continue
             if rt == "c2_glue":
                 c2_glue_combos.append((combo, output_path, partition))
+                continue
+            if rt == "c3_glue":
+                # Same driver, same batching; run_c2_glue_path.py's
+                # choose_right picks the degree-3 block as RIGHT.
+                c2_glue_combos.append((combo, output_path, partition))
+                c3_glue_count += 1
+                continue
+            if rt == "c2_glue2":
+                c2_glue2_combos.append((combo, output_path, partition))
                 continue
             if rt == "wreath_ra":
                 wreath_combos.append((combo, output_path, partition))
@@ -400,15 +420,63 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
         c2_glue_heavy_src = 2000
 
     def _c2_glue_weight(combo):
+        # Mirror run_c2_glue_path.py's choose_right preference so the weight
+        # is measured on the source the engine will actually stream:
+        # (2,1) -> n-2 source, else the degree-3 block -> n-3 source.
         x = list(combo)
-        x.remove((2, 1))
+        for right in ((2, 1), (3, 2), (3, 1)):
+            if x.count(right) == 1:
+                x.remove(right)
+                break
+        else:
+            return 0
         return left_class_count(tuple(x), sum(d for d, _ in x), sn_out)
+
+    # TRUE monsters (above BUILD_SN_C2GLUE_SHARD_SRC source lines) fan out
+    # over source line ranges via the engine's --shards (exact merge: the
+    # per-line Goursat work is entry-local).  (3,1) RIGHTs are excluded:
+    # their class_sum is computed in closed form from the WHOLE source's
+    # header (per-shard closed forms would overcount), and their textual
+    # stream is I/O-bound anyway (n=23 [3,1]_[4,3]^5 = 1.6M lines in ~34s).
+    try:
+        c2_glue_shard_src = int(os.environ.get(
+            "BUILD_SN_C2GLUE_SHARD_SRC", "100000"))
+    except ValueError:
+        c2_glue_shard_src = 100000
+    try:
+        c2_glue_shards = int(os.environ.get("BUILD_SN_C2GLUE_SHARDS", "6"))
+    except ValueError:
+        c2_glue_shards = 6
+
+    def _c2_glue_right(combo):
+        # run_c2_glue_path.py's choose_right preference order.
+        for right in ((2, 1), (3, 2), (3, 1)):
+            if combo.count(right) == 1:
+                return right
+        return None
 
     c2_glue_chunks = []
     c2_glue_light = []
     for combo, output_path, partition in sorted(
             c2_glue_combos, key=lambda t: -_c2_glue_weight(t[0])):
-        if _c2_glue_weight(combo) > c2_glue_heavy_src:
+        w = _c2_glue_weight(combo)
+        if (w > c2_glue_shard_src and c2_glue_shards > 1
+                and _c2_glue_right(combo) != (3, 1)):
+            if args.combo_timeout == 0:
+                inner_timeout = 0
+                outer_timeout = None
+            else:
+                inner_timeout = args.combo_timeout + 120
+                outer_timeout = inner_timeout + 120
+            cmd = [sys.executable, "run_c2_glue_path.py",
+                   "--combo", combo_filename(combo),
+                   "--output-path", str(output_path),
+                   "--shards", str(max(1, c2_glue_shards)),
+                   "--timeout", str(inner_timeout)]
+            tasks.append((TASK_KIND_C2_GLUE2_SHARDED,
+                          f"c2_glue_shard_{combo_filename(combo)}",
+                          cmd, outer_timeout))
+        elif w > c2_glue_heavy_src:
             c2_glue_chunks.append([(combo, output_path, partition)])
         else:
             c2_glue_light.append((combo, output_path, partition))
@@ -435,6 +503,154 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
                       f"c2_glue_{batch_idx}({len(chunk)}j)",
                       cmd, outer_timeout))
 
+    # C2^2-glue streaming path: combos with exactly two (2,1) blocks (the
+    # peel_c2_pair family), batched like c2_glue.  Weight = the n-4 source's
+    # class count; heavy sources get a standalone session, and TRUE monsters
+    # (above BUILD_SN_C2GLUE2_SHARD_SRC lines) use the engine's --shards
+    # line-range fan-out so a 3.88M-class job doesn't ride one core.
+    def _c2_glue2_weight(combo):
+        x = list(combo)
+        x.remove((2, 1))
+        x.remove((2, 1))
+        return left_class_count(tuple(x), sum(d for d, _ in x), sn_out)
+
+    try:
+        c2_glue2_shard_src = int(os.environ.get(
+            "BUILD_SN_C2GLUE2_SHARD_SRC", "20000"))
+    except ValueError:
+        c2_glue2_shard_src = 20000
+    try:
+        c2_glue2_shards = int(os.environ.get(
+            "BUILD_SN_C2GLUE2_SHARDS", "4"))
+    except ValueError:
+        c2_glue2_shards = 4
+
+    c2_glue2_chunks = []
+    c2_glue2_light = []
+    for combo, output_path, partition in sorted(
+            c2_glue2_combos, key=lambda t: -_c2_glue2_weight(t[0])):
+        w = _c2_glue2_weight(combo)
+        if w > c2_glue2_shard_src:
+            # standalone sharded session
+            if args.combo_timeout == 0:
+                inner_timeout, outer_timeout = 0, None
+            else:
+                inner_timeout = args.combo_timeout + 120
+                outer_timeout = inner_timeout + 120
+            cmd = [sys.executable, "run_c2_glue2_path.py",
+                   "--combo", combo_filename(combo),
+                   "--output-path", str(output_path),
+                   "--shards", str(max(1, c2_glue2_shards)),
+                   "--timeout", str(inner_timeout)]
+            tasks.append((TASK_KIND_C2_GLUE2_SHARDED,
+                          f"c2_glue2_shard_{combo_filename(combo)}",
+                          cmd, outer_timeout))
+        elif w > c2_glue_heavy_src:
+            c2_glue2_chunks.append([(combo, output_path, partition)])
+        else:
+            c2_glue2_light.append((combo, output_path, partition))
+    for start in range(0, len(c2_glue2_light), c2_glue_batch_jobs):
+        c2_glue2_chunks.append(c2_glue2_light[start:start + c2_glue_batch_jobs])
+    for batch_idx, chunk in enumerate(c2_glue2_chunks):
+        cg_dir = pred_tmp / f"c2_glue2_n{n}_{batch_idx}"
+        cg_dir.mkdir(parents=True, exist_ok=True)
+        jobs_json = cg_dir / "jobs.json"
+        jobs_json.write_text(json.dumps([
+            {"combo": combo_filename(combo), "output_path": str(output_path)}
+            for combo, output_path, _ in chunk
+        ]), encoding="utf-8")
+        if args.combo_timeout == 0:
+            inner_timeout = 0
+            outer_timeout = None
+        else:
+            inner_timeout = args.combo_timeout * len(chunk) + 120
+            outer_timeout = inner_timeout + 120
+        cmd = [sys.executable, "run_c2_glue2_path.py",
+               "--batch-json", str(jobs_json),
+               "--timeout", str(inner_timeout)]
+        tasks.append((TASK_KIND_C2_GLUE2_BATCH,
+                      f"c2_glue2_{batch_idx}({len(chunk)}j)",
+                      cmd, outer_timeout))
+
+    # Identity routes: pure-Python textual materialization from lower-n
+    # files (run_identity_path.py, no GAP).  Cost is dominated by the bytes
+    # written, so jobs are weighed by projected output lines (product of the
+    # factor counts / the transfer target's count); TRUE monsters (a
+    # multi-M-line product is a ~1 GB write) get a standalone task so they
+    # don't stall a chunk of thousands of instant jobs.
+    try:
+        identity_batch_jobs = int(os.environ.get(
+            "BUILD_SN_IDENTITY_BATCH_JOBS", "200"))
+    except ValueError:
+        identity_batch_jobs = 200
+    identity_batch_jobs = max(1, identity_batch_jobs)
+    try:
+        identity_heavy_out = int(os.environ.get(
+            "BUILD_SN_IDENTITY_HEAVY_OUT", "500000"))
+    except ValueError:
+        identity_heavy_out = 500000
+
+    _identity_weights = {}
+    _identity_src_counts = {}   # factor/target combo -> # deduped (factors
+                                # like [3,1] recur across thousands of combos)
+
+    def _identity_src_count(c):
+        if c not in _identity_src_counts:
+            _identity_src_counts[c] = left_class_count(
+                c, sum(d for d, _ in c), sn_out)
+        return _identity_src_counts[c]
+
+    def _identity_weight(combo):
+        if combo in _identity_weights:
+            return _identity_weights[combo]
+        from run_identity_path import classify_identity
+        ident = classify_identity(combo)
+        w = 0
+        if ident is not None:
+            if ident["kind"] == "id_transfer":
+                w = _identity_src_count(ident["target"])
+            else:
+                w = 1
+                for f in ident["factors"]:
+                    c = _identity_src_count(f)
+                    if c == 0:
+                        w = 0
+                        break
+                    w *= c
+        _identity_weights[combo] = w
+        return w
+
+    identity_chunks = []
+    identity_light = []
+    for item in sorted(identity_combos,
+                       key=lambda t: -_identity_weight(t[0])):
+        if _identity_weight(item[0]) > identity_heavy_out:
+            identity_chunks.append([item])
+        else:
+            identity_light.append(item)
+    for start in range(0, len(identity_light), identity_batch_jobs):
+        identity_chunks.append(identity_light[start:start + identity_batch_jobs])
+    for batch_idx, chunk in enumerate(identity_chunks):
+        id_dir = pred_tmp / f"identity_n{n}_{batch_idx}"
+        id_dir.mkdir(parents=True, exist_ok=True)
+        jobs_json = id_dir / "jobs.json"
+        jobs_json.write_text(json.dumps([
+            {"combo": combo_filename(combo), "output_path": str(output_path)}
+            for combo, output_path, _ in chunk
+        ]), encoding="utf-8")
+        if args.combo_timeout == 0:
+            inner_timeout = 0
+            outer_timeout = None
+        else:
+            inner_timeout = args.combo_timeout * len(chunk) + 120
+            outer_timeout = inner_timeout + 120
+        cmd = [sys.executable, "run_identity_path.py",
+               "--batch-json", str(jobs_json),
+               "--timeout", str(inner_timeout)]
+        tasks.append((TASK_KIND_IDENTITY_BATCH,
+                      f"identity_{batch_idx}({len(chunk)}j)",
+                      cmd, outer_timeout))
+
     for combo, output_path, partition in wreath_combos:
         cmd = [sys.executable, "predict_full_general_wreath.py",
                "--combo", combo_filename(combo),
@@ -455,9 +671,11 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
     # ---- 4. sort by priority: wreath first (long tail), then c2, then batches.
     # Stable sort preserves intra-kind order so deterministic.
     _priority = {
+        TASK_KIND_IDENTITY_BATCH: 0,
         TASK_KIND_WREATH: 0, TASK_KIND_WREATH_VIA_2F: 0,
         TASK_KIND_BD8: 0, TASK_KIND_ELEMAB: 0, TASK_KIND_B_POWER: 0,
         TASK_KIND_C2_GLUE_BATCH: 0,
+        TASK_KIND_C2_GLUE2_SHARDED: 0, TASK_KIND_C2_GLUE2_BATCH: 0,
         TASK_KIND_C2: 1, "c2_factor": 1, TASK_KIND_C2_FACTOR_BATCH: 1,
         TASK_KIND_SUPER_BATCH: 2, TASK_KIND_BATCH: 2,
     }
@@ -470,7 +688,10 @@ def build_dispatch_tasks(args, n, partitions, num_transitive, sn_out, n_dir,
         "bd8": len(bd8_combos),
         "elemab": len(elemab_combos),
         "b_power": len(b_power_combos),
-        "c2_glue": len(c2_glue_combos),
+        "c2_glue": len(c2_glue_combos) - c3_glue_count,
+        "c2_glue2": len(c2_glue2_combos),
+        "c3_glue": c3_glue_count,
+        "identity": len(identity_combos),
         "burnside_m2": len(burnside_combos),
         "wreath_ra": len(wreath_combos),
         "wreath_via_2f": len(wreath_via_2f_combos),

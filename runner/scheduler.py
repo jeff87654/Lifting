@@ -37,6 +37,7 @@ from runner.combos import (
     init_completeness_cache,
     is_complete_combo_file,
     part_dirname,
+    read_combo_count_headers,
     save_completeness_cache,
 )
 from runner.constants import A000638, A005432, A116693, ROOT, TIMING_BASELINE
@@ -49,58 +50,6 @@ from runner.route import route
 
 
 MAX_RETRY_ROUNDS = 3
-
-
-def _ref_candidate_count(output_path: str, out_root: Path, ref_root: Path) -> int:
-    """Predict a combo's candidate count by reading the `# candidates:` (or
-    `# deduped:`) header of the same combo in a reference tree.  Maps the
-    combo's output path under `out_root` to the same relative path under
-    `ref_root`.  Returns 0 if not found / unreadable (so it never throttles)."""
-    try:
-        rel = Path(output_path).resolve().relative_to(out_root)
-    except (ValueError, OSError):
-        return 0
-    ref_file = ref_root / rel
-    if not ref_file.exists():
-        return 0
-    try:
-        txt = ref_file.read_text(encoding="utf-8", errors="ignore")[:4000]
-    except OSError:
-        return 0
-    m = re.search(r"^# candidates:\s*(\d+)", txt, re.MULTILINE)
-    if m is None:
-        m = re.search(r"^# deduped:\s*(\d+)", txt, re.MULTILINE)
-    return int(m.group(1)) if m else 0
-
-
-def _task_output_paths(cmd) -> list:
-    """The combo output paths a dispatch task will (re)compute, dug out of its
-    jobs.json / super.json / --output-path so we can predict its memory."""
-    try:
-        if "--batch" in cmd:
-            data = json.loads(Path(cmd[cmd.index("--batch") + 1]).read_text())
-            return [j["output_path"] for j in data]
-        if "--super-batch" in cmd:
-            data = json.loads(Path(cmd[cmd.index("--super-batch") + 1]).read_text())
-            return [j["output_path"] for g in data["groups"] for j in g["jobs"]]
-        if "--output-path" in cmd:
-            return [cmd[cmd.index("--output-path") + 1]]
-    except (OSError, ValueError, KeyError, json.JSONDecodeError):
-        return []
-    return []
-
-
-def _task_is_mem_heavy(task, threshold: int, ref_root: Path, out_root: Path) -> bool:
-    """True if any combo in this task is predicted (via the reference tree) to
-    have more than `threshold` candidates -- i.e. a memory monster that must be
-    run under the reduced-concurrency gate."""
-    if threshold <= 0 or ref_root is None:
-        return False
-    _kind, _key, cmd, _timeout = task
-    for op in _task_output_paths(cmd):
-        if _ref_candidate_count(op, out_root, ref_root) > threshold:
-            return True
-    return False
 
 
 def main():
@@ -127,19 +76,6 @@ def main():
                     help="LEFT sources with > this many deduped classes always run as their "
                          "own standalone batch (one fresh GAP per heavy LEFT) regardless of "
                          "super-batching, to avoid GAP runtime degradation on long jobs")
-    ap.add_argument("--mem-heavy-threshold", type=int, default=0,
-                    help="memory governor: tasks whose predicted candidate count (looked up "
-                         "in --mem-heavy-ref) exceeds this run with reduced concurrency "
-                         "(--mem-heavy-workers) so the handful of true memory-monster combos "
-                         "never co-run; everything else keeps full --workers parallelism. "
-                         "0 disables (default).")
-    ap.add_argument("--mem-heavy-workers", type=int, default=1,
-                    help="max number of mem-heavy tasks allowed to run concurrently "
-                         "(default 1 = strictly one monster at a time)")
-    ap.add_argument("--mem-heavy-ref", default="",
-                    help="reference output tree used to predict a combo's candidate count "
-                         "for the memory governor (e.g. a completed same-degree tree). "
-                         "Empty disables the governor regardless of --mem-heavy-threshold.")
     args = ap.parse_args()
 
     sn_out = Path(args.out).resolve()
@@ -193,6 +129,7 @@ def main():
         n_dir.mkdir(exist_ok=True)
         bootstrap_entries = []
         per_combo_results = []
+        failures_at_n_start = len(failures)
 
         # Pre-collect bootstrap entries for batching.
         n_invalid_skipped = 0
@@ -225,21 +162,37 @@ def main():
         if bootstrap_entries:
             print(f"[n={n}] bootstrapping {len(bootstrap_entries)} single-block combos...")
             t0 = time.time()
-            run_bootstrap_batch(bootstrap_entries, pred_tmp / f"bootstrap_n{n}")
-            bs_missing = [e for e in bootstrap_entries
-                          if not (e[2].exists() and is_complete_combo_file(e[2]))]
-            if bs_missing:
-                print(f"[n={n}] bootstrap left {len(bs_missing)} combos "
-                      f"missing/incomplete - retrying once")
-                run_bootstrap_batch(bs_missing, pred_tmp / f"bootstrap_n{n}_retry")
+            # Retry with backoff: a machine-load transient (cygwin bash fork
+            # failure under a saturated box -> rc=1, empty log+stderr,
+            # observed 2026-07-02) fails an immediate retry the same way;
+            # waiting out the spike is what actually recovers.
+            try:
+                bs_attempts = max(1, int(os.environ.get(
+                    "BUILD_SN_BOOTSTRAP_RETRIES", "3")))
+            except ValueError:
+                bs_attempts = 3
+            bs_missing = bootstrap_entries
+            for attempt in range(bs_attempts):
+                if attempt > 0:
+                    backoff = 30 * attempt
+                    print(f"[n={n}] bootstrap left {len(bs_missing)} combos "
+                          f"missing/incomplete - retry {attempt}/"
+                          f"{bs_attempts - 1} after {backoff}s backoff")
+                    time.sleep(backoff)
+                run_bootstrap_batch(
+                    bs_missing,
+                    pred_tmp / (f"bootstrap_n{n}" if attempt == 0
+                                else f"bootstrap_n{n}_retry{attempt}"))
                 bs_missing = [e for e in bs_missing
                               if not (e[2].exists() and is_complete_combo_file(e[2]))]
+                if not bs_missing:
+                    break
             if bs_missing:
                 raise RuntimeError(
                     f"[n={n}] bootstrap failed for {len(bs_missing)} single-block "
-                    f"combos after retry (first: degree {bs_missing[0][0]}, "
-                    f"T-index {bs_missing[0][1]}); see "
-                    f"{pred_tmp / f'bootstrap_n{n}_retry' / 'bootstrap.log'}")
+                    f"combos after {bs_attempts} attempts (first: degree "
+                    f"{bs_missing[0][0]}, T-index {bs_missing[0][1]}); see "
+                    f"{pred_tmp / f'bootstrap_n{n}_retry{bs_attempts - 1}' / 'bootstrap_0.log'}")
             print(f"  bootstrap done in {time.time()-t0:.1f}s")
 
         for retry_round in range(MAX_RETRY_ROUNDS + 1):
@@ -283,6 +236,9 @@ def main():
                   f"elemab={summary_counts['elemab']}, "
                   f"b_power={summary_counts['b_power']}, "
                   f"c2_glue={summary_counts['c2_glue']}, "
+                  f"c2_glue2={summary_counts['c2_glue2']}, "
+                  f"c3_glue={summary_counts.get('c3_glue', 0)}, "
+                  f"identity={summary_counts.get('identity', 0)}, "
                   f"burnside_m2={summary_counts['burnside_m2']}, "
                   f"wreath_ra={summary_counts['wreath_ra']}, "
                   f"wreath_via_2f={summary_counts['wreath_via_2f']}, "
@@ -292,26 +248,13 @@ def main():
             n_done = 0
             n_tasks = len(tasks)
 
-            # Memory governor: split off the predicted memory-monster tasks and
-            # run them under a tight concurrency cap (--mem-heavy-workers) so the
-            # handful of giant combos never co-run, while every other task keeps
-            # full --workers parallelism.  Identification is a pure prediction
-            # from --mem-heavy-ref; it never changes which combos are computed.
-            mem_ref_root = (Path(args.mem_heavy_ref).resolve()
-                            if args.mem_heavy_ref else None)
-            mem_cap = max(1, args.mem_heavy_workers)
-            heavy_q, light_q = [], []
-            for t in tasks:
-                if _task_is_mem_heavy(t, args.mem_heavy_threshold,
-                                      mem_ref_root, sn_out):
-                    heavy_q.append(t)
-                else:
-                    light_q.append(t)
-            if heavy_q:
-                print(f"  [n={n}] mem-governor: {len(heavy_q)} mem-heavy task(s) "
-                      f"capped at {mem_cap} concurrent "
-                      f"(predicted > {args.mem_heavy_threshold} candidates)")
-
+            # Memory governor REMOVED 2026-06-11 (user decision): it predated
+            # the gens-streaming / windowed-framed-cache / lazy-LEFT-recon /
+            # c2_glue memory fixes, which eliminated the 30 GB pair-loop
+            # workers it was guarding against — and it gated by predicted
+            # CANDIDATE COUNT regardless of route, serializing analytic
+            # (b_power/bd8) and streaming (c2_glue) monsters that are cheap
+            # on memory by construction.  Plain FIFO over `tasks` now.
             def _handle(fut, kind, key):
                 nonlocal n_done, n_gap_wall, n_combos, n_fpf, n_seconds
                 try:
@@ -359,32 +302,20 @@ def main():
                     print(f"  [n={n}] {n_done}/{n_tasks} tasks done "
                           f"(elapsed={time.time()-n_dispatch_t0:.0f}s)")
 
-            in_flight = {}          # future -> (kind, key, is_heavy)
-            heavy_inflight = 0
+            in_flight = {}          # future -> (kind, key)
+            task_q = list(tasks)
             with ProcessPoolExecutor(max_workers=args.workers) as pool:
                 def _fill():
-                    nonlocal heavy_inflight
-                    while len(in_flight) < args.workers:
-                        if heavy_q and heavy_inflight < mem_cap:
-                            kind, key, cmd, timeout = heavy_q.pop(0)
-                            is_heavy = True
-                        elif light_q:
-                            kind, key, cmd, timeout = light_q.pop(0)
-                            is_heavy = False
-                        else:
-                            break  # only capped-out heavy tasks left: wait for a slot
+                    while len(in_flight) < args.workers and task_q:
+                        kind, key, cmd, timeout = task_q.pop(0)
                         fut = pool.submit(_run_subprocess_task, kind, key, cmd, timeout)
-                        in_flight[fut] = (kind, key, is_heavy)
-                        if is_heavy:
-                            heavy_inflight += 1
+                        in_flight[fut] = (kind, key)
 
                 _fill()
                 while in_flight:
                     done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
                     for fut in done:
-                        kind, key, is_heavy = in_flight.pop(fut)
-                        if is_heavy:
-                            heavy_inflight -= 1
+                        kind, key = in_flight.pop(fut)
                         _handle(fut, kind, key)
                     _fill()
         else:
@@ -443,13 +374,13 @@ def main():
             for combo in combos_for_partition(partition, num_transitive):
                 output_path = part_dir / f"{combo_filename(combo)}.g"
                 if output_path.exists() and is_complete_combo_file(output_path):
-                    text = output_path.read_text(encoding="utf-8")
-                    m = re.search(r"^# deduped:\s*(\d+)", text, re.MULTILINE)
+                    # Header-only read (O(1) memory): never slurps a multi-GB
+                    # monster body just to grab # deduped / # class_sum.
+                    deduped_v, cs_v = read_combo_count_headers(output_path)
                     n_combos += 1
-                    n_fpf += int(m.group(1)) if m else 0
-                    mcs = re.search(r"^# class_sum:\s*(\d+)", text, re.MULTILINE)
-                    if mcs:
-                        part_class_sum += int(mcs.group(1))
+                    n_fpf += deduped_v if deduped_v is not None else 0
+                    if cs_v is not None:
+                        part_class_sum += cs_v
                     else:
                         # fall back to labelled_postpass sidecar.
                         sc = cs_dir / part_dirname(partition) / f"{combo_filename(combo)}.cs"
@@ -563,6 +494,26 @@ def main():
             "labelled_by_partition": labelled_by_partition,
             "timing_baseline_s": TIMING_BASELINE.get(n),
         }
+
+        # Per-n fail-fast (2026-07-02 audit open item): a bad n must not keep
+        # feeding higher-n glue/identity/2-factor runs with corrupt sources
+        # for days.  Any count failure recorded at THIS n (retry exhaustion,
+        # FPF mismatch, labelled L_FPF/L(n) mismatch vs a known reference)
+        # aborts the run now; the summary and failure list are still written.
+        # Frontier n (no OEIS/A116693 reference) records nothing here, so a
+        # first computation can never false-trigger.  Escape hatch:
+        # BUILD_SN_FAILFAST=0 restores the old collect-and-continue.
+        new_failures = failures[failures_at_n_start:]
+        if new_failures and os.environ.get("BUILD_SN_FAILFAST") != "0":
+            summary["failures"] = failures
+            (sn_out / "_build_summary.json").write_text(
+                json.dumps(summary, indent=2), encoding="utf-8")
+            print(f"[n={n}] FAIL-FAST: aborting the run - this n's outputs "
+                  f"feed every higher n as sources.  "
+                  f"(BUILD_SN_FAILFAST=0 to collect-and-continue.)")
+            for f_msg in new_failures:
+                print(f"  - {f_msg}")
+            sys.exit(1)
 
     summary["failures"] = failures
     (sn_out / "_build_summary.json").write_text(

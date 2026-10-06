@@ -34,9 +34,9 @@ fi;
 
 ChiefFactorAsModule := function(Q, M_bar, N_bar)
     local G, p, hom, module, gens_Q, gens_G, module_group,
-          standardComplement, baseComplements,
-          baseComplement, newGensQ, newGensG, i, j,
-          pcgsG, phi, invphi, found;
+           standardComplement, baseComplements,
+           baseComplement, newGensQ, newGensG, i, j,
+           pcgsG, phi, invphi, found, imgG;
 
     # The acting group G is Q/M_bar (complements are subgroups mapping onto G)
     hom := SafeNaturalHomByNSG(Q, M_bar);
@@ -303,6 +303,37 @@ ChiefFactorAsModule := function(Q, M_bar, N_bar)
                 fi;
             fi;
         od;
+    fi;
+
+    # Final generator recovery: if baseComplement is genuinely a complement,
+    # the restricted quotient map baseComplement -> G is an isomorphism.  Some
+    # quotient/group-parent combinations nevertheless make Group(gens_G) look
+    # too small for images of the complement's stored generators.  In that case,
+    # generate the full image subgroup first and pull those generators back
+    # through the restricted isomorphism.
+    if not found then
+        imgG := Image(hom, baseComplement);
+        if imgG <> fail and Size(imgG) = Size(G) then
+            phi := GroupHomomorphismByImages(
+                baseComplement, imgG,
+                GeneratorsOfGroup(baseComplement),
+                List(GeneratorsOfGroup(baseComplement), x -> Image(hom, x))
+            );
+
+            if phi <> fail and IsBijective(phi) then
+                invphi := InverseGeneralMapping(phi);
+                gens_G := GeneratorsOfGroup(imgG);
+                gens_Q := List(gens_G, g -> Image(invphi, g));
+
+                if ForAll(gens_Q, q -> q <> fail and q in baseComplement)
+                   and Length(gens_G) > 0 then
+                    found := true;
+                else
+                    gens_Q := [];
+                    gens_G := [];
+                fi;
+            fi;
+        fi;
     fi;
 
     # Final fallback: if no complement worked, return failure
@@ -821,7 +852,8 @@ GetComplementsViaH1 := function(arg)
     if module = fail or (IsRecord(module) and
             IsBound(module.isModuleConstructionFailed) and module.isModuleConstructionFailed) then
         Info(InfoWarning, 1, "GetComplementsViaH1: module construction failed, using GAP fallback");
-        if IsRecord(module) and IsBound(module.foundComplements) then
+        if IsRecord(module) and IsBound(module.foundComplements)
+           and Length(module.foundComplements) > 0 then
             complements := module.foundComplements;
         else
             complements := ComplementClassesRepresentatives(Q, M_bar);

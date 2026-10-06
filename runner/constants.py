@@ -49,8 +49,8 @@ A000638 = {
     #     rank->=2 2-group-glue subdirect classes (and also carried dedup dupes).
     #     The fresh post-fix v3only build is RA-clean and validates exactly against
     #     the correct S20 reference on all 118,882 combos.  See [[s21_value_correction]].
-    #     PROVISIONAL: +10.2M is concentrated in 8 [3,2]xD8 combos still under
-    #     independent RA verification; revert to 235181063 only if that fails.
+    #     The +10.2M is concentrated in 8 [3,2]xD8 combos; an independent
+    #     RepresentativeAction dedup of those combos reproduced the counts.
     19: 16745233, 20: 104994596, 21: 245393739,
 }
 
@@ -153,3 +153,38 @@ DISABLE_B_POWER = _env_flag("BUILD_SN_DISABLE_B_POWER")
 # route (distinguished).  Default ON — landed 2026-06-09, validated 841/841
 # vs v3only n=5..13 incl. class_sum; ~17.5x on n=18 [2,1]_[4,3]^4.
 DISABLE_C2_GLUE = os.environ.get("BUILD_SN_C2GLUE") == "0"
+
+# BUILD_SN_C2GLUE2=0 disables the C2^2-glue streaming route (combos with
+# exactly TWO (2,1) blocks + a non-degree-2 cluster, the peel_c2_pair family
+# -> run_c2_glue2_path.py: glue {1, C2, V4}, block-swap Aut collapse
+# hand-derived, entry-local Goursat, NO LEFT H-cache, --shards line-range
+# fan-out).  Disabled combos fall back to their previous route
+# (peel_c2_pair).  Default ON — landed 2026-06-11, validated 2518/2518 exact
+# (deduped + class_sum) vs fresh_0604 n=8..17.
+DISABLE_C2_GLUE2 = os.environ.get("BUILD_SN_C2GLUE2") == "0"
+
+# BUILD_SN_C3GLUE=0 disables the c3_glue streaming route (combos with exactly
+# one degree-3 block against a 3-coprime LEFT -> run_c2_glue_path.py, which
+# already implements (3,1)/(3,2) RIGHTs: glue forced to {1} (C3) or {1, C2}
+# (S3, kernel A3 characteristic), entry-local Goursat, NO LEFT H-cache; the
+# engine re-checks coprimality GAP-side and reports RESULT_NA otherwise).
+# Disabled combos fall back to their previous route (distinguished /
+# holt_split).  Every FPF class surjects onto each block constituent, so
+# "no LEFT species order divisible by 3" is an EXACT test for 3 coprime to
+# |H_L| — checked Python-side via TG_ORDERS_PATH.
+DISABLE_C3_GLUE = os.environ.get("BUILD_SN_C3GLUE") == "0"
+
+# BUILD_SN_IDENTITY=0 disables the identity routes (id_product / id_absorb /
+# id_transfer -> run_identity_path.py: coprime-cluster product, single-block
+# absorption, and D_2d/S_d -> (2,1) transfer — pure-Python textual
+# materialization from already-built lower-n files, NO GAP).  All three
+# identities verified exact (deduped + labelled, 0 failures) against every
+# applicable s2..s22 combo (2026-07-02, memory
+# `coprime_product_transfer_identities`).  Disabled combos fall back to
+# their previous route (c2_glue / c3_glue / distinguished / ...).
+DISABLE_IDENTITY = os.environ.get("BUILD_SN_IDENTITY") == "0"
+
+# Size(TransitiveGroup(d,t)) for d=2..22, generated 2026-07-02 by
+# _gen_tg_orders.py (one-shot GAP run).  Loaded lazily by runner.route for
+# the c3_glue 3-coprime species check.
+TG_ORDERS_PATH = ROOT / "database" / "tg_orders.json"

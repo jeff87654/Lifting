@@ -240,3 +240,13 @@ emit_4444/
 bucket_run_*/
 debug_*/
 profile_wreath_work/
+
+# Runtime dependencies of the S2..S21 pipeline that the scratch patterns above
+# would otherwise hide (published 2026-10).
+!run_c2_glue2_path.py
+!run_identity_path.py
+!b_c4.g
+!b_d8_v2.g
+!b_elemab.g
+!b21_writer_final.g
+!database/bd8_u_orbits/

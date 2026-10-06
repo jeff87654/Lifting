@@ -896,7 +896,11 @@ def _write_legacy_format(output_path, combo, raw_gens_lines, deduped_count, elap
         for line in joined_lines:
             f.write(line + "\n")
     os.replace(tmp_path, output_path)   # atomic on POSIX; also atomic on Windows for same volume
-    return len(joined_lines)
+    # Count only generator lines: the gens file's `# class_sum:` harvest
+    # header (and any other comment) is written through to the output but is
+    # not a class.  Counting it made the truncation check below fire on
+    # every run, turning it into a dead guard.
+    return sum(1 for ln in joined_lines if not ln.lstrip().startswith("#"))
 
 
 def predict_wreath(combo_str: str, target_n=18, timeout=3600,
@@ -1028,8 +1032,18 @@ def predict_wreath(combo_str: str, target_n=18, timeout=3600,
         n_written = _write_legacy_format(Path(output_path), target_combo, raw_lines,
                                           out["predicted"], elapsed_ms)
         if n_written != out["predicted"]:
-            out["warning_count_mismatch"] = (
-                f"wrote {n_written} generator lines but predicted={out['predicted']}")
+            # Genuine truncation: the emitted body disagrees with the class
+            # count.  Remove the bad output and fail loudly instead of
+            # leaving a complete-looking file for downstream consumers.
+            try:
+                Path(output_path).unlink()
+            except OSError:
+                pass
+            out["error"] = (
+                f"wrote {n_written} generator lines but "
+                f"predicted={out['predicted']} (truncated gens emit; "
+                f"output removed)")
+            return out
         out["output_path"] = str(output_path)
     (work / "result.json").write_text(json.dumps(out, indent=2))
     return out

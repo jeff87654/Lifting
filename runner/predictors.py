@@ -40,6 +40,9 @@ TASK_KIND_SUPER_BATCH = "super_batch"
 TASK_KIND_C2 = "c2"
 TASK_KIND_C2_FACTOR_BATCH = "c2_factor_batch"
 TASK_KIND_C2_GLUE_BATCH = "c2_glue_batch"
+TASK_KIND_C2_GLUE2_BATCH = "c2_glue2_batch"
+TASK_KIND_C2_GLUE2_SHARDED = "c2_glue2_sharded"   # single-shaped (one JSON dict)
+TASK_KIND_IDENTITY_BATCH = "identity_batch"       # run_identity_path.py --batch-json
 TASK_KIND_WREATH = "wreath"
 TASK_KIND_WREATH_VIA_2F = "wreath_via_2f"
 TASK_KIND_BD8 = "bd8"
@@ -53,6 +56,8 @@ BATCH_KINDS = frozenset({
     TASK_KIND_SUPER_BATCH,
     TASK_KIND_C2_FACTOR_BATCH,
     TASK_KIND_C2_GLUE_BATCH,
+    TASK_KIND_C2_GLUE2_BATCH,
+    TASK_KIND_IDENTITY_BATCH,
 })
 
 
