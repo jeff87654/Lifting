@@ -8,6 +8,11 @@ subgroups of `S_n`, conjugates counted separately) and
 [A116693](https://oeis.org/A116693) (the fixed-point-free part), which serve
 as an independent cross-check and give three new terms of each sequence.
 
+All data and code are archived on Zenodo:
+[doi:10.5281/zenodo.23198808](https://doi.org/10.5281/zenodo.23198808)
+(latest version; this release is
+[10.5281/zenodo.23198809](https://doi.org/10.5281/zenodo.23198809)).
+
 ## Results
 
 | n  | a(n) = A000638(n)   | FPF(n)          | status                                  |
@@ -178,6 +183,12 @@ authoritative. Header order varies between engines.
 | `parallel_sn_21.tar.xz` | 21 | 140,399,143 | [release `s21-results`](https://github.com/jeff87654/Lifting/releases/tag/s21-results) |
 | `combo_class_counts_s2_s21.csv.gz` | 2–21 | per combo | repo root |
 
+Everything above is also archived permanently on Zenodo,
+[doi:10.5281/zenodo.23198809](https://doi.org/10.5281/zenodo.23198809). There
+the n = 20 and n = 21 archives are split into 64 MiB pieces; rejoin them with
+`cat parallel_sn_21.tar.xz.part* > parallel_sn_21.tar.xz` and check the result
+against `SHA256SUMS`.
+
 The archives for `n ≤ 19` predate the labelled harvest and carry no
 `# class_sum:` headers. `combo_class_counts_s2_s21.csv.gz` lists every FPF
 combo for `n = 2..21` with its class count and labelled sum, taken from the
@@ -286,8 +297,8 @@ Engines
 
 To cite this work, use GitHub's "Cite this repository" button (generated from
 `CITATION.cff`), or cite: Jeffrey Ketchersid, *Conjugacy classes of
-subgroups of the symmetric groups S_n, n ≤ 21*,
-https://github.com/jeff87654/Lifting.
+subgroups of the symmetric groups S_n, n ≤ 21*, Zenodo,
+[doi:10.5281/zenodo.23198808](https://doi.org/10.5281/zenodo.23198808).
 
 The code is released under the MIT License (`LICENSE`). The data — the
 `parallel_sn_*.tar.xz` archives and `combo_class_counts_s2_s21.csv.gz` — is
