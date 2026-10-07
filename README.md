@@ -10,8 +10,8 @@ as an independent cross-check and give three new terms of each sequence.
 
 All data and code are archived on Zenodo:
 [doi:10.5281/zenodo.23198808](https://doi.org/10.5281/zenodo.23198808)
-(latest version; this release is
-[10.5281/zenodo.23198809](https://doi.org/10.5281/zenodo.23198809)).
+(latest version; the current version, 1.1, is
+[10.5281/zenodo.23221877](https://doi.org/10.5281/zenodo.23221877)).
 
 ## Results
 
@@ -184,7 +184,7 @@ authoritative. Header order varies between engines.
 | `combo_class_counts_s2_s21.csv.gz` | 2–21 | per combo | repo root |
 
 Everything above is also archived permanently on Zenodo,
-[doi:10.5281/zenodo.23198809](https://doi.org/10.5281/zenodo.23198809). There
+[doi:10.5281/zenodo.23198808](https://doi.org/10.5281/zenodo.23198808). There
 the n = 20 and n = 21 archives are split into 64 MiB pieces; rejoin them with
 `cat parallel_sn_21.tar.xz.part* > parallel_sn_21.tar.xz` and check the result
 against `SHA256SUMS`.

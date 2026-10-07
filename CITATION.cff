@@ -5,16 +5,16 @@ type: dataset
 authors:
   - family-names: Ketchersid
     given-names: Jeffrey
-version: "1.0"
+version: "1.1"
 doi: 10.5281/zenodo.23198808
 identifiers:
   - type: doi
     value: 10.5281/zenodo.23198808
     description: "Zenodo archive, all versions (resolves to the latest)"
   - type: doi
-    value: 10.5281/zenodo.23198809
-    description: "Zenodo archive, version 1.0 (n <= 21)"
-date-released: 2026-10-05
+    value: 10.5281/zenodo.23221877
+    description: "Zenodo archive, version 1.1 (n <= 21)"
+date-released: 2026-10-07
 repository-code: "https://github.com/jeff87654/Lifting"
 license:
   - MIT
