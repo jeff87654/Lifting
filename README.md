@@ -221,9 +221,11 @@ i7-11800H, 8 cores, 64 GB RAM). The software was GAP 4.15.1 under Cygwin on
 Windows 11, driven from Python 3.11.
 
 The code here is byte-identical to that build's working tree. The only
-exceptions are comments in `runner/constants.py` and four GAP files that
-were untracked at the time and are restored from their identical copies:
-`b_c4.g`, `b_d8_v2.g`, `b_elemab.g` and `b21_writer_final.g`. The files are
+exceptions are comments in `runner/constants.py` and seven files that were
+untracked at the time and are restored from their identical copies:
+`b_c4.g`, `b_d8_v2.g`, `b_elemab.g`, `b21_writer_final.g`, `b21_canonical.g`
+and `b21_support_first.g`, which the build reads, and
+`predict_full_general.py`, which `verify_wreath_dedup.py` uses. The files are
 otherwise as they ran. In particular, paths are hard-coded to
 `C:/Users/jeffr/Downloads/Lifting` and GAP is started through Cygwin `bash`
 (`runner/constants.py`, `runner/predictors.py`). Running the build elsewhere
@@ -274,7 +276,8 @@ Engines
   `run_c2_glue2_path.py` + `c2_glue2_path_writer.g` (`c2_glue2`): streaming
   glue engines.
 - `run_c2_fast_path.py`, `run_c2_factor_path.py`, `c2_fast_path_writer.g`,
-  `b21_writer_final.g`: pure `C_2^k`.
+  `b21_writer_final.g`, `b21_canonical.g`, `b21_support_first.g`: pure
+  `C_2^k`.
 - `run_b_elemab_path.py`, `b_elemab.g`, `b_elemab_g.g`: elementary abelian
   `T^k`.
 - `run_b_power_path.py`, `b_power/`, `b_c4.g`: `C_3`/`S_3`/`C_4`/`V_4`/`D_8`
@@ -284,7 +287,8 @@ Engines
 - `b_*_harvest.g`: labelled sums for the closed-form engines.
 - `predict_full_general_wreath.py` (alias `wreath_ra_dedup.py`),
   `run_wreath_via_2factor.py`: wreath engine; `verify_wreath_dedup.py`
-  cross-checks it.
+  cross-checks it against `predict_full_general.py`, which dedups under the
+  full `S_n`.
 - `lifting_algorithm.g` (fiber products) plus `modules.g`, `h1_action.g`,
   `cohomology.g`, `lifting_method_fast_v2.g`: the original Holt-style
   chief-series lifting code. It is still loaded, but only the

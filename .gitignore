@@ -250,3 +250,6 @@ profile_wreath_work/
 !b_elemab.g
 !b21_writer_final.g
 !database/bd8_u_orbits/
+!b21_canonical.g
+!b21_support_first.g
+!predict_full_general.py
